@@ -1,3 +1,4 @@
+import 'package:window_manager/window_manager.dart';
 import 'package:avaremp/logbook/logbook_screen.dart';
 import 'package:avaremp/longpress_screen.dart';
 import 'package:avaremp/plan/plan_action_screen.dart';
@@ -32,6 +33,17 @@ void main() {
   // this is to control cache. Nexrad needs it or image caching will make it impossible to animate weather
   CustomWidgetsBinding();
   Storage().init().then((accentColor) async {
+    // window_manager only supports desktop; on mobile the plugin is not
+    // registered at all, so guard the calls.
+    if (Constants.supportsWindowManagement) {
+      try {
+        await windowManager.ensureInitialized();
+        await windowManager.setFullScreen(Storage().settings.getFullScreen());
+      }
+      catch (e) {
+        // best effort - never block startup on window management
+      }
+    }
     if(Constants.shouldShowProServices) {
       try {
         await Firebase.initializeApp(

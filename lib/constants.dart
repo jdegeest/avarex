@@ -95,10 +95,17 @@ class Constants {
 
 
   static final bool shouldShare = !(Platform.isLinux);
-  static final bool shouldShowPdf = !(Platform.isLinux);
+  // PDF viewing (approach plates, imported documents). Was excluded on Linux,
+  // but syncfusion_flutter_pdfviewer and its Linux plugin (plus libpdfium) are
+  // present in the Linux bundle, so the exclusion appears to be stale.
+  static final bool shouldShowPdf = true;
   static final bool shouldShowBluetoothSpp = (Platform.isAndroid);
   static final bool shouldShouldReview = (Platform.isMacOS || Platform.isIOS | Platform.isAndroid || Platform.isWindows);
   static final bool shouldShowProServices = (Platform.isIOS || Platform.isAndroid);
+
+  // Desktop window management (full screen). window_manager only implements
+  // linux/macos/windows; everywhere else must not call into it.
+  static final bool supportsWindowManagement = (Platform.isLinux || Platform.isWindows || Platform.isMacOS);
 
   // Whether the Firebase-backed cloud features (e.g. Airport Businesses &
   // Reviews) are available. Firebase is only initialized on these platforms

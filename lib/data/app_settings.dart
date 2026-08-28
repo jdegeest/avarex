@@ -244,6 +244,16 @@ class AppSettings {
     provider.setBool("key-signed", value);
   }
 
+  /// Full screen on desktop. Defaults to true: this is a cockpit EFB and
+  /// window chrome is wasted space in flight.
+  bool getFullScreen() {
+    return provider.getValue("key-full-screen", defaultValue: true) as bool;
+  }
+
+  void setFullScreen(bool value) {
+    provider.setBool("key-full-screen", value);
+  }
+
   String getTrafficPuckSize() {
     return provider.getValue("key-traffic-puck-size", defaultValue: "S") as String;
   }

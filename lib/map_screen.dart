@@ -3,6 +3,7 @@ import 'package:avaremp/utils/elevation_tile_provider.dart';
 import 'package:avaremp/utils/image_utils.dart';
 import 'package:avaremp/utils/mbtiles_layer.dart';
 import 'package:avaremp/utils/path_utils.dart';
+import 'package:window_manager/window_manager.dart';
 import 'package:avaremp/utils/toast.dart';
 import 'package:avaremp/cap/cap_grid_layer.dart';
 import 'package:avaremp/weather/ceiling_layer.dart';
@@ -66,6 +67,30 @@ class MapScreenState extends State<MapScreen> {
   int _maxZoom = ChartCategory.chartTypeToZoom(Storage().settings.getChartType());
   final MapController _controller = MapController();
   // get layers and states from settings
+  bool _isFullScreen = Storage().settings.getFullScreen();
+
+  /// Step the map zoom, clamped to the same limits as MapOptions.
+  void _zoomBy(double delta) {
+    final double target = (_controller.camera.zoom + delta).clamp(2, 20);
+    _controller.move(_controller.camera.center, target);
+  }
+
+  /// Toggle the desktop window between full screen and windowed, and remember
+  /// the choice so the next launch matches.
+  Future<void> _toggleFullScreen() async {
+    final bool next = !_isFullScreen;
+    try {
+      await windowManager.setFullScreen(next);
+      Storage().settings.setFullScreen(next);
+      setState(() {
+        _isFullScreen = next;
+      });
+    }
+    catch (e) {
+      Storage().setException("Full screen toggle failed: $e");
+    }
+  }
+
   final List<String> _layers = Storage().settings.getLayers();
   final List<double> _layersOpacity = Storage().settings.getLayersOpacity();
   final List<String> _weatherProducts = Storage().settings.getWeatherProducts();
@@ -500,9 +525,15 @@ class MapScreenState extends State<MapScreen> {
       // this is less crazy
       maxZoom: 20,
       // max for USGS
-      interactionOptions: InteractionOptions(flags: _northUp
+      interactionOptions: InteractionOptions(
+        flags: _northUp
           ? InteractiveFlag.all & (~InteractiveFlag.doubleTapDragZoom) & (~InteractiveFlag.rotate)
-          : InteractiveFlag.all & (~InteractiveFlag.doubleTapDragZoom)),
+          : InteractiveFlag.all & (~InteractiveFlag.doubleTapDragZoom),
+        // R/F zoom. A trackpad two-finger scroll arrives as a pan gesture, not
+        // a scroll wheel event, so laptops without a touchscreen or mouse wheel
+        // otherwise have no way to zoom. Arrow-key panning is on by default.
+        keyboardOptions: const KeyboardOptions(enableRFZooming: true),
+      ),
       // no rotation in track up
       initialRotation: Storage().settings.getRotation(),
       backgroundColor: Storage().settings.isLightMode() ? Constants.mapBackgroundColorLight: Constants.mapBackgroundColorDark,
@@ -1478,15 +1509,21 @@ class MapScreenState extends State<MapScreen> {
                               ),
                             if (_layersOpacity[_layers.indexOf("Traffic")] > 0)
                               IconButton(
-                                tooltip: "Traffic Volume:\n"
-                                    "S: 20 Aircraft, 3000ft, 10NM\n"
-                                    "M: 200 Aircraft, 6000ft, 50NM\n"
-                                    "L: 1000 Aircraft, 30000ft, 500NM",
+                                tooltip: "Traffic altitude window:\n"
+                                    "S: ${TrafficCache.describePuck("S")}\n"
+                                    "M: ${TrafficCache.describePuck("M")}\n"
+                                    "L: ${TrafficCache.describePuck("L")}\n"
+                                    "X: ${TrafficCache.describePuck("X")}",
                                 onPressed: () {
+                                  final String next = TrafficCache.adjustPuck(Storage().settings.getTrafficPuckSize());
                                   setState(() {
-                                    Storage().settings.setTrafficPuckSize(TrafficCache.adjustPuck(Storage().settings.getTrafficPuckSize()));
+                                    Storage().settings.setTrafficPuckSize(next);
                                   });
-                                  Storage().trafficCache.changeArea(Storage().settings.getTrafficPuckSize());
+                                  Storage().trafficCache.changeArea(next);
+                                  // Report the envelope the new setting filters to, since the
+                                  // button itself can only show a single letter.
+                                  Toast.showToast(context, "Traffic $next: ${TrafficCache.describePuck(next)}",
+                                      const Icon(Icons.flight), 3);
                                 },
                                 icon: CircleAvatar(radius: iconRadius, backgroundColor: Theme.of(context).scaffoldBackgroundColor.withValues(alpha: 0.7),
                                     child: Text(Storage().settings.getTrafficPuckSize())),
@@ -1678,6 +1715,34 @@ class MapScreenState extends State<MapScreen> {
                                         child: const Icon(Icons.layers)),
                                     onPressed: () => _showLayerSelector(context),
                                   ),
+
+                                  // Zoom buttons. A trackpad two-finger scroll is
+                                  // delivered as a pan gesture rather than a scroll
+                                  // wheel event, so a laptop with no touchscreen and
+                                  // no mouse wheel has no other way to zoom.
+                                  IconButton(
+                                    tooltip: "Zoom in",
+                                    icon: CircleAvatar(radius: iconRadius, backgroundColor: Theme.of(context).scaffoldBackgroundColor.withValues(alpha: 0.7),
+                                        child: const Icon(Icons.add)),
+                                    onPressed: () => _zoomBy(1),
+                                  ),
+
+                                  IconButton(
+                                    tooltip: "Zoom out",
+                                    icon: CircleAvatar(radius: iconRadius, backgroundColor: Theme.of(context).scaffoldBackgroundColor.withValues(alpha: 0.7),
+                                        child: const Icon(Icons.remove)),
+                                    onPressed: () => _zoomBy(-1),
+                                  ),
+
+                                  // Full screen toggle (desktop only - the plugin
+                                  // has no mobile implementation)
+                                  if (Constants.supportsWindowManagement)
+                                    IconButton(
+                                      tooltip: _isFullScreen ? "Leave full screen" : "Enter full screen",
+                                      icon: CircleAvatar(radius: iconRadius, backgroundColor: Theme.of(context).scaffoldBackgroundColor.withValues(alpha: 0.7),
+                                          child: Icon(_isFullScreen ? Icons.fullscreen_exit : Icons.fullscreen)),
+                                      onPressed: _toggleFullScreen,
+                                    ),
                                 ]
                               ),
                           )

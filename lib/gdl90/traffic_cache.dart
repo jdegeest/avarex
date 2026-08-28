@@ -127,14 +127,27 @@ class TrafficCache {
 
   List<Traffic?> _traffic = [];
   late int _kTrafficAltDiffThresholdFt;
-  late int _kTrafficDistanceDiffThresholdNm;
   late int maxEntries;
 
+  // Puck envelopes, keyed by size. X exists for high-altitude overflights,
+  // which sit 30000ft+ above a low ownship and are filtered out even by L.
+  // Kept as one source of truth so the UI can report the same numbers the
+  // filter actually applies.
+  static const Map<String, int> _puckAltFt   = {"S": 3000, "M": 6000, "L": 30000, "X": 60000};
+  static const Map<String, int> _puckMaxAcft = {"S": 20,   "M": 200,  "L": 1000,  "X": 2000};
+
+  /// Human-readable altitude envelope for a puck size, for the UI.
+  static String describePuck(String size) {
+    final int? alt = _puckAltFt[size];
+    if (alt == null) {
+      return "";
+    }
+    return "\u00b1${alt ~/ 1000}000 ft";
+  }
+
   void changeArea(String size) {
-    // puck size S, M, L
-    maxEntries =                        size == "S" ? 20    : (size == "M" ? 200   : 1000);
-    _kTrafficAltDiffThresholdFt =       size == "S" ? 3000  : (size == "M" ? 6000  : 30000);
-    _kTrafficDistanceDiffThresholdNm =  size == "S" ? 10    : (size == "M" ? 50    : 500);
+    maxEntries =                        _puckMaxAcft[size]  ?? _puckMaxAcft["S"]!;
+    _kTrafficAltDiffThresholdFt =       _puckAltFt[size]    ?? _puckAltFt["S"]!;
     List<Traffic?> t = List.filled(maxEntries + 1, null);
     if(t.length < _traffic.length) {
       // shrink
@@ -168,6 +181,9 @@ class TrafficCache {
         output = "L";
         break;
       case "L":
+        output = "X";
+        break;
+      case "X":
         output = "S";
         break;
     }
@@ -220,9 +236,9 @@ class TrafficCache {
           message.callSign = _traffic[i]?.message.callSign ?? "";
         }
         final Traffic trafficNew = Traffic(message);
-        // only display/alert traffic that isn't too far from ownship
-        if (trafficNew.verticalOwnshipDistanceFt.abs() > _kTrafficAltDiffThresholdFt ||
-          trafficNew.horizontalOwnshipDistanceNmi > _kTrafficDistanceDiffThresholdNm) {
+        // only display/alert traffic within the altitude window; range is left to
+        // ADS-B reception and the relevance sort
+        if (trafficNew.verticalOwnshipDistanceFt.abs() > _kTrafficAltDiffThresholdFt) {
            _traffic[i] = null;
            message.filter = TrafficFilter.range;
           return;
@@ -239,9 +255,9 @@ class TrafficCache {
 
     // put it in the end
     final Traffic trafficNew = Traffic(message);
-    // only display/alert traffic that isn't too far from ownship
-    if (trafficNew.verticalOwnshipDistanceFt.abs() > _kTrafficAltDiffThresholdFt ||
-      trafficNew.horizontalOwnshipDistanceNmi > _kTrafficDistanceDiffThresholdNm) {
+    // only display/alert traffic within the altitude window; range is left to
+        // ADS-B reception and the relevance sort
+    if (trafficNew.verticalOwnshipDistanceFt.abs() > _kTrafficAltDiffThresholdFt) {
       message.filter = TrafficFilter.range;
       return;
     }    
@@ -312,7 +328,8 @@ class TrafficCache {
     Future(() {
       for (int i = 0; i < _traffic.length; i++) {
         _traffic[i]?.updateOwnshipDistancesAndAlertFields();
-        // only display/alert traffic that isn't too far from ownship
+        // only display/alert traffic within the altitude window; range is left to
+        // ADS-B reception and the relevance sort
         if ((_traffic[i]?.verticalOwnshipDistanceFt.abs() ?? 0) > _kTrafficAltDiffThresholdFt) {
           _traffic[i] = null;
         }        
@@ -550,7 +567,11 @@ abstract class AbstractCachedCustomPainter extends CustomPainter {
     if (!_isRealtimeRasterizationRequired) {
       final ui.Image? cachedImage = _imageCache[_uiStateKey];  
       if (cachedImage != null) {
-        paintImage(canvas: canvas, rect: Rect.fromLTWH(0, 0, cachedImage.width*1.0, cachedImage.height*1.0), image: cachedImage);
+        // Draw into the LOGICAL rect. The cached bitmap is devicePixelRatio
+        // times larger, so it lands on screen at native resolution instead of
+        // being magnified (which is what made label text blurry).
+        paintImage(canvas: canvas, rect: Rect.fromLTWH(0, 0, _maxSize.width, _maxSize.height),
+          image: cachedImage, filterQuality: FilterQuality.high);
         return;
       }
     }
@@ -575,11 +596,30 @@ abstract class AbstractCachedCustomPainter extends CustomPainter {
     
     // Cache pixels of image to image cache, to save rasterization next time, if possible, and paint image
     if (!_isRealtimeRasterizationRequired) {
-      picture.toImage(_maxSize.width.ceil(), _maxSize.height.ceil()).then((newImage) {
-        _imageCache[_uiStateKey] = newImage;
-      });
+      // Re-record at device pixel scale so the cached raster is full
+      // resolution. The unscaled picture above is still used for drawPicture.
+      final double dpr = _devicePixelRatio;
+      final ui.PictureRecorder hiRecorder = ui.PictureRecorder();
+      final ui.Canvas hiCanvas = Canvas(hiRecorder);
+      hiCanvas.scale(dpr);
+      freshPaint(hiCanvas);
+      hiRecorder.endRecording()
+        .toImage((_maxSize.width * dpr).ceil(), (_maxSize.height * dpr).ceil())
+        .then((newImage) {
+          _imageCache[_uiStateKey] = newImage;
+        });
     }
     canvas.drawPicture(picture);
+  }
+
+  /// Display scale used when rasterizing the image cache.
+  static double get _devicePixelRatio {
+    final views = ui.PlatformDispatcher.instance.views;
+    if (views.isEmpty) {
+      return 1.0;
+    }
+    final double r = views.first.devicePixelRatio;
+    return r > 0 ? r : 1.0;
   }
 
   /// Abstract hook for implementing painter to paint the custom UI
