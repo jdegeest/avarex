@@ -450,6 +450,17 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver { //
         // start GPS
         Storage().startIO();
         break;
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.hidden:
+        // On desktop these fire when the window merely loses focus or is
+        // occluded by another window. Tearing down the UDP receiver there
+        // stops ADS-B traffic and GPS while the user looks at another window,
+        // and traffic already on the map goes stale or disappears. Mobile
+        // keeps the original behaviour, where backgrounding should free radios.
+        if (!Constants.isDesktop) {
+          Storage().stopIO();
+        }
+        break;
       default:
         Storage().stopIO();
         break;

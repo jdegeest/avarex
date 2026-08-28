@@ -100,6 +100,10 @@ class Constants {
   static final bool shouldShouldReview = (Platform.isMacOS || Platform.isIOS | Platform.isAndroid || Platform.isWindows);
   static final bool shouldShowProServices = (Platform.isIOS || Platform.isAndroid);
 
+  // Desktop platforms. Used to keep IO running when the window loses focus,
+  // which on desktop is a routine event rather than a backgrounding.
+  static final bool isDesktop = (Platform.isLinux || Platform.isWindows || Platform.isMacOS);
+
   // Whether the Firebase-backed cloud features (e.g. Airport Businesses &
   // Reviews) are available. Firebase is only initialized on these platforms
   // (see main.dart), so this is a capability gate, NOT a Pro/paywall gate.
