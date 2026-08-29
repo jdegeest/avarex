@@ -223,7 +223,7 @@ Instrument tiles float as a full-screen overlay on top of the map. Each tile can
 | **UPT** | Up timer (count up, green when running) | Start/stop timer |
 | **DNT** | Down timer (count down from 30min, red when expired) | Start/stop timer |
 | **UTC** | Current UTC time (HH:MM) | — |
-| **SRC** | GPS source mode. Shows `Internal`, `External`, `Internal-A`, or `External-A` (A=Auto mode) | Tap to cycle modes: Auto, Internal, External. Green=Internal, Blue=External |
+| **SRC** | Which GPS source to use: `Auto`, `Internal`, or `External`. Colour shows whether you actually have a position: green (this device), blue (ADS-B receiver), amber (no position yet), red (location denied/off), grey (no GPS on this computer) | Tap to cycle the mode. A message explains what the mode means and what your position state is right now |
 | **FLT** | Total flight time in hours | Reset timer |
 | **ADSB** | ADS-B receiver status (from GDL90 heartbeat + FIS-B uplinks). Shows your own tail number when the receiver reports it; otherwise a status circle — green filled circle ● = connected with GPS, yellow filled circle ● = connected without GPS (partial), empty circle ○ = disconnected. Only the text/circle is colored; the tile background is unchanged. Enable from the tiles menu. | Open the **ADS-B Status** screen |
 
@@ -1281,10 +1281,17 @@ This is the most common cause of "AvareX traffic doesn't work" on iPhone/iPad an
 
 - On reaching the onboarding **Databases and Maps** page, AvareX automatically downloads the **DatabasesX** package plus the **Sectional**, **Plates**, and **CSUP** for your current GPS region whenever any of them are missing/expired (skips items already current).
 - Weather downloads refresh periodically (10-minute cycle in storage timer).
-- GPS source modes (tap `SRC` tile to cycle):
-  - **Auto**: Prefers external GPS when available, falls back to internal after 30s timeout. Shows `Internal-A` or `External-A`.
-  - **Internal**: Uses only internal GPS, discards external GPS data. Shows `Internal` with green background.
-  - **External**: Uses only external GPS, discards internal GPS data. Shows `External` with blue background.
+- GPS source modes (tap `SRC` tile to cycle). The tile shows the mode you selected; its colour shows whether you actually have a position:
+  - **Auto**: Uses the external/ADS-B position when one is arriving, falling back to this device's GPS after a 30s timeout.
+  - **Internal**: Uses only this device's GPS; external position data is ignored.
+  - **External**: Uses only the external/ADS-B position; this device's GPS is ignored.
+- Position states reported by the warnings drawer, the `SRC` tile colour and the ADS-B status screen:
+  - **This device** / **ADS-B receiver** — you have a position, from that source.
+  - **Searching** — this device has a GPS but no fix yet. Move to an open area.
+  - **Receiver has no fix** — the ADS-B receiver is connected but sending no ownship position, so the receiver itself has no GPS fix. Traffic and weather still work.
+  - **No receiver data** — nothing is arriving from an external receiver. Check you are joined to its Wi-Fi and it is powered on.
+  - **None on this computer** — this machine has no GPS or location provider at all. Use an external receiver; ADS-B traffic and weather work without a position.
+  - **Access denied** / **Turned off** — location permission denied, or location services off (mobile only; these can be fixed in device settings).
 - Flight status tracks taxi/airborne transitions and accumulates flight time.
 - External autopilot/NMEA sentence output is generated continuously while app is running and IO connection exists.
 - Track recording continues while Tracks layer is enabled; saves to KML when layer is turned off.

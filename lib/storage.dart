@@ -258,17 +258,31 @@ class Storage {
     return GpsState.internalFix;
   }
 
-  /// Short label for the SRC instrument tile.
+  /// Plain-language label for where position is coming from. Used in the
+  /// diagnostics screen, which has room for words rather than abbreviations.
   String get gpsStateLabel {
     switch (gpsState) {
-      case GpsState.internalFix:        return "Internal";
-      case GpsState.internalSearching:  return "No Fix";
-      case GpsState.internalPermissionDenied: return "Blocked";
-      case GpsState.internalServiceOff: return "Off";
-      case GpsState.noProvider:         return "No GPS";
-      case GpsState.externalFix:        return "ADS-B";
-      case GpsState.externalNoOwnship:  return "No Own";
-      case GpsState.externalNoData:     return "No Data";
+      case GpsState.internalFix:              return "This device";
+      case GpsState.internalSearching:        return "Searching";
+      case GpsState.internalPermissionDenied: return "Access denied";
+      case GpsState.internalServiceOff:       return "Turned off";
+      case GpsState.noProvider:               return "None on this computer";
+      case GpsState.externalFix:              return "ADS-B receiver";
+      case GpsState.externalNoOwnship:        return "Receiver has no fix";
+      case GpsState.externalNoData:           return "No receiver data";
+    }
+  }
+
+  /// What each source mode means, in plain language. Shown when the pilot taps
+  /// the SRC tile so the effect of the tap is explicit rather than inferred.
+  String get gpsSourceModeDescription {
+    switch (gpsSourceMode) {
+      case "Internal":
+        return "Use only this device's own GPS. The ADS-B receiver's position is ignored.";
+      case "External":
+        return "Use only the ADS-B receiver's position. This device's own GPS is ignored.";
+      default:
+        return "Use the ADS-B receiver's position when it has one, otherwise fall back to this device's GPS.";
     }
   }
 

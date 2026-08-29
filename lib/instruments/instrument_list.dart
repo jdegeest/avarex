@@ -287,7 +287,7 @@ class InstrumentListState extends State<InstrumentList> {
       // UPT: green when counting, default otherwise
       _itemsColors[_items.indexOf("UPT")] = Storage().flightTimer.isStarted() ? Colors.green : defaultColor;
       _utc = _truncate(_hourMinuteFormatter.format(DateTime.now().toUtc()));
-      _source = Storage().gpsStateLabel;
+      _source = Storage().gpsSourceMode;
       // Colour reflects whether we actually have a position, not which mode is
       // selected -- a dead GPS used to look identical to a working one.
       defaultColor = Theme.of(context).cardColor.withValues(alpha: 0.6);
@@ -366,8 +366,17 @@ class InstrumentListState extends State<InstrumentList> {
   void _cycleGpsSourceMode() {
     Storage().cycleGpsSourceMode();
     setState(() {
-      _source = Storage().gpsStateLabel;
+      _source = Storage().gpsSourceMode;
     });
+    // Say what the tap just did and what it means right now, rather than
+    // leaving the pilot to infer it from a three-letter tile.
+    Toast.showToast(
+        context,
+        "GPS source: ${Storage().gpsSourceMode}\n"
+        "${Storage().gpsSourceModeDescription}\n"
+        "Now: ${Storage().gpsStateLabel} \u2014 ${Storage().gpsStateMessage}",
+        const Icon(Icons.my_location),
+        6);
   }
 
   // ADS-B tile tap: open the receiver status screen.
@@ -646,8 +655,8 @@ class InstrumentListState extends State<InstrumentList> {
                     "UPT - Tap to start/stop the up timer.\n"
                     "DNT - Tap to start/stop the down timer.\n"
                     "UTC - Coordinated Universal Time.\n"
-                    "SRC - Where your position is coming from right now. Tap to cycle the source mode: Auto (use the ADS-B receiver when it is sending a position, otherwise this device), Internal (this device only), External (ADS-B receiver only).\n"
-                    "      Internal=this device has a fix (green). ADS-B=position from the receiver (blue). No Fix=this device has a GPS but no fix yet (amber). No Own=receiver connected but sending no ownship position, so it has no fix of its own (amber). No Data=nothing arriving from a receiver (amber). No GPS=this computer has no GPS at all (grey). Blocked/GPS Off=location denied or turned off (red).\n"
+                    "SRC - Which GPS source to use. Tap to cycle: Auto (receiver when it has a position, otherwise this device), Internal (this device only), External (receiver only). Tapping shows what the mode means and what you have right now.\n"
+                    "      Tile colour is whether you actually have a position: green=yes from this device, blue=yes from the ADS-B receiver, amber=no position yet, red=location denied or turned off, grey=this computer has no GPS. The ADS-B status screen explains the current state in full.\n"
                     "FLT - Total flight time in hours. Tap to reset.\n"
                     "ADSB- ADS-B receiver status. Shows your tail number when the receiver reports it; otherwise a circle (green \u25cf=connected, yellow \u25cf=connected without GPS, \u25cb=disconnected). Click on the tile to open the status screen.\n",
                     null, 30);
