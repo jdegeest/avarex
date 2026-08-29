@@ -1,6 +1,7 @@
 
 import 'dart:core';
 import 'package:avaremp/constants.dart';
+import 'package:avaremp/io/gps.dart' show GpsState;
 import 'package:avaremp/storage.dart' show Storage;
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
@@ -62,49 +63,46 @@ class WarningsWidgetState extends State<WarningsWidget> {
         subtitle: const Text("Tapping on the issue may help you resolve it."),
         leading: Icon(MdiIcons.alertCircle, color: Colors.red,), dense: false,)];
 
-    // Desktop has no per-app location permission and no location-services
-    // toggle, and Geolocator.openAppSettings()/openLocationSettings() are no-ops
-    // there -- so the mobile wording and the tap-to-fix action are both wrong.
-    String gpsPermissionMessage = !widget.gpsNotPermitted ? "" :
-    (Constants.isDesktop
-        ? "No location provider is available on this computer. Use an external GPS or ADS-B receiver instead; ADS-B traffic and weather work without a position fix."
-        : "GPS permission is denied, please enable it in device settings.");
-    if(gpsPermissionMessage.isNotEmpty) {
-      list.add(ListTile(title: Text(Constants.isDesktop ? "Location" : "GPS Permission"),
-          leading: const Icon(Icons.gpp_good_sharp),
-          subtitle: Text(gpsPermissionMessage),
+    // One tile driven by Storage().gpsState, so the drawer, the SRC tile and
+    // the diagnostics screen can never disagree about what is wrong. The old
+    // three booleans overlapped: "permission denied" also fired when the
+    // platform had no provider, and "no lock" fired even when there was no
+    // receiver to get a lock with.
+    final GpsState gpsState = Storage().gpsState;
+    if (gpsState != GpsState.internalFix && gpsState != GpsState.externalFix) {
+      const Map<GpsState, (String, IconData)> presentation = {
+        GpsState.noProvider:              ("No GPS on this computer", Icons.gps_off_sharp),
+        GpsState.internalPermissionDenied:("Location access denied", Icons.gpp_good_sharp),
+        GpsState.internalServiceOff:      ("Location services off", Icons.gps_off_sharp),
+        GpsState.internalSearching:       ("GPS has no fix yet", Icons.gps_not_fixed),
+        GpsState.externalNoOwnship:       ("Receiver has no GPS fix", Icons.satellite_alt),
+        GpsState.externalNoData:          ("No receiver data", Icons.wifi_off),
+      };
+      final (String title, IconData icon) =
+          presentation[gpsState] ?? ("GPS", Icons.gps_not_fixed);
+      // Only offer a settings jump where one actually exists and would help.
+      final bool actionable = !Constants.isDesktop &&
+          (gpsState == GpsState.internalPermissionDenied ||
+           gpsState == GpsState.internalServiceOff);
+      list.add(ListTile(
+          title: Text(title),
+          leading: Icon(icon),
+          subtitle: Text(Storage().gpsStateMessage),
           dense: true,
-          onTap: Constants.isDesktop ? null : () {
+          onTap: !actionable ? null : () {
             try {
-              Geolocator.openAppSettings();
+              if (gpsState == GpsState.internalPermissionDenied) {
+                Geolocator.openAppSettings();
+              }
+              else {
+                Geolocator.openLocationSettings();
+              }
             }
             catch(e) {
-              Storage().setException("Error opening app settings: $e");
+              Storage().setException("Error opening settings: $e");
             }
             Scaffold.of(context).closeEndDrawer();
           }));
-    }
-
-    String gpsEnabledMessage = !widget.gpsDisabled ? "" :
-    (Constants.isDesktop
-        ? "No location service is running on this computer. Connect an external GPS or ADS-B receiver over UDP, or set GPS Source to External."
-        : "GPS is disabled, please enable it in device settings.");
-    if(gpsEnabledMessage.isNotEmpty) {
-      list.add(ListTile(title: const Text("GPS"),
-          leading: const Icon(Icons.gps_off_sharp),
-          subtitle: Text(gpsEnabledMessage),
-          dense: true,
-          onTap: Constants.isDesktop ? null : () {Geolocator.openLocationSettings(); Scaffold.of(context).closeEndDrawer();}));
-    }
-
-    String gpsLockedMessage = !widget.gpsNoLock ? "" :
-    "GPS lock cannot be obtained. Move to an open area where GPS signal can be received.";
-    if(gpsLockedMessage.isNotEmpty) {
-      list.add(ListTile(title: const Text("GPS Signal"),
-          leading: const Icon(Icons.gps_not_fixed),
-          subtitle: Text(gpsLockedMessage),
-          dense: true,
-          onTap: () {Navigator.pop(context);}));
     }
 
     String dataAvailableMessage = !widget.chartsMissing ? "" :

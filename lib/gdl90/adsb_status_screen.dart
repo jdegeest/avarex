@@ -2,6 +2,7 @@ import 'package:avaremp/gdl90/adsb_status.dart';
 import 'package:avaremp/gdl90/ground_station_cache.dart';
 import 'package:avaremp/gdl90/stratus_open_mode.dart';
 import 'package:avaremp/gdl90/traffic_report_message.dart';
+import 'package:avaremp/io/gps.dart' show GpsState;
 import 'package:avaremp/storage.dart';
 import 'package:avaremp/utils/geo_calculations.dart';
 import 'package:avaremp/utils/toast.dart';
@@ -324,6 +325,47 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
                         connColor,
                       ),
                       _boolTile(Icons.gps_fixed, "GPS position valid", s.gpsValid),
+                      // Where position is actually coming from, and why not, if
+                      // not. "GPS position valid" above is only about the
+                      // receiver's own fix; this covers the whole chain.
+                      ListTile(
+                        dense: true,
+                        leading: Icon(Icons.my_location, color: switch (Storage().gpsState) {
+                          GpsState.internalFix => Colors.green,
+                          GpsState.externalFix => Colors.blue,
+                          GpsState.internalPermissionDenied ||
+                          GpsState.internalServiceOff => Colors.red,
+                          GpsState.noProvider => Colors.grey,
+                          _ => Colors.amber,
+                        }),
+                        title: const Text("Position source"),
+                        trailing: Text(Storage().gpsStateLabel,
+                            style: const TextStyle(fontWeight: FontWeight.bold)),
+                        subtitle: Text(Storage().gpsStateMessage),
+                        isThreeLine: true,
+                      ),
+                      _statusTile(
+                        Icons.tune,
+                        "Source mode",
+                        Storage().gpsSourceMode,
+                        Colors.grey,
+                      ),
+                      _statusTile(
+                        Icons.flight,
+                        "Ownship reports",
+                        s.typeCount(0x0A) == 0
+                            ? "none received"
+                            : "${s.typeCount(0x0A)}  (${s.secondsSinceOwnship}s ago)",
+                        s.typeCount(0x0A) == 0 ? Colors.amber : Colors.green,
+                      ),
+                      _statusTile(
+                        Icons.radar,
+                        "Traffic reports",
+                        s.trafficMessageCount == 0
+                            ? "none received"
+                            : "${s.trafficMessageCount}  (${s.secondsSinceTraffic}s ago)",
+                        s.trafficMessageCount == 0 ? Colors.grey : Colors.green,
+                      ),
                       _boolTile(Icons.access_time, "UTC timing OK", s.utcOk),
                       _boolTile(Icons.power_settings_new, "UAT initialized", s.uatInitialized),
                       _statusTile(

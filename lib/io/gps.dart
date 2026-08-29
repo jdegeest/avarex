@@ -7,6 +7,22 @@ import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 
 
+/// What the position source is actually doing. These are deliberately
+/// separate states: "no location provider on this system" is permanent and
+/// cannot be fixed in settings or by moving outdoors; "provider present but no
+/// fix yet" can; and "ADS-B receiver connected but sending no ownship position"
+/// is the receiver's GPS problem, not this device's.
+enum GpsState {
+  internalFix,
+  internalSearching,
+  internalPermissionDenied,
+  internalServiceOff,
+  noProvider,
+  externalFix,
+  externalNoOwnship,
+  externalNoData,
+}
+
 class Gps {
 
   static Position fromLatLng(LatLng latLng) {
@@ -24,17 +40,45 @@ class Gps {
   }
 
 
+  /// True when the user has actively denied location access. Distinct from
+  /// [isProviderUnavailable]: unableToDetermine means the platform has no
+  /// location implementation at all, which is not something the user can grant.
   Future<bool> isPermissionDenied() async {
-    final GeolocatorPlatform platform = GeolocatorPlatform.instance;
-    LocationPermission permission = await platform.checkPermission();
-    return (LocationPermission.denied == permission ||
-        LocationPermission.deniedForever == permission ||
-        LocationPermission.unableToDetermine == permission);
+    try {
+      final GeolocatorPlatform platform = GeolocatorPlatform.instance;
+      LocationPermission permission = await platform.checkPermission();
+      return (LocationPermission.denied == permission ||
+          LocationPermission.deniedForever == permission);
+    }
+    catch (e) {
+      return false; // no provider to deny; see isProviderUnavailable
+    }
+  }
+
+  /// True when this system exposes no location provider at all -- typically a
+  /// desktop with no GeoClue/location service and no GPS hardware. This is a
+  /// permanent condition, not something a user can fix in settings or by
+  /// moving outdoors, so it must not be reported as "permission denied" or
+  /// "no lock".
+  Future<bool> isProviderUnavailable() async {
+    try {
+      final GeolocatorPlatform platform = GeolocatorPlatform.instance;
+      return LocationPermission.unableToDetermine ==
+          await platform.checkPermission();
+    }
+    catch (e) {
+      return true; // platform threw: no implementation available
+    }
   }
 
   Future<bool> isDisabled() async {
-    final GeolocatorPlatform platform = GeolocatorPlatform.instance;
-    return !(await platform.isLocationServiceEnabled());
+    try {
+      final GeolocatorPlatform platform = GeolocatorPlatform.instance;
+      return !(await platform.isLocationServiceEnabled());
+    }
+    catch (e) {
+      return false; // no service to be disabled; see isProviderUnavailable
+    }
   }
 
   // for testing

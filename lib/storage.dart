@@ -186,13 +186,6 @@ class Storage {
     settings.setGpsSourceMode(gpsSourceMode);
   }
 
-  String getGpsSourceModeString() {
-    // Auto mode shows actual source with -A suffix, others show the mode name
-    if (gpsSourceMode == "Auto") {
-      return gpsInternal ? "Internal-A" : "External-A";
-    }
-    return gpsSourceMode;
-  }
   bool isRollReversed = false;
 
   // ADS-B receiver status (heartbeat + ground uplinks post to this directly)
@@ -233,6 +226,77 @@ class Storage {
   bool chartsMissing = false;
   bool gpsNotPermitted = false;
   bool gpsDisabled = false;
+  /// No location provider exists on this system at all (typical on desktop).
+  /// Distinct from permission denied or service disabled -- neither of which
+  /// the user can act on when there is simply no provider.
+  bool gpsNoProvider = false;
+
+  /// The single source of truth for how position acquisition is doing, used by
+  /// both the warnings drawer and the instrument tile so they cannot disagree.
+  GpsState get gpsState {
+    if (gpsSourceMode == "External" || !gpsInternal) {
+      if (!adsbStatus.connected) {
+        return GpsState.externalNoData;
+      }
+      if (adsbStatus.typeCount(0x0A) == 0 || adsbStatus.secondsSinceOwnship > 30) {
+        return GpsState.externalNoOwnship;
+      }
+      return GpsState.externalFix;
+    }
+    if (gpsNoProvider) {
+      return GpsState.noProvider;
+    }
+    if (gpsNotPermitted) {
+      return GpsState.internalPermissionDenied;
+    }
+    if (gpsDisabled) {
+      return GpsState.internalServiceOff;
+    }
+    if (gpsNoLock) {
+      return GpsState.internalSearching;
+    }
+    return GpsState.internalFix;
+  }
+
+  /// Short label for the SRC instrument tile.
+  String get gpsStateLabel {
+    switch (gpsState) {
+      case GpsState.internalFix:        return "Internal";
+      case GpsState.internalSearching:  return "No Fix";
+      case GpsState.internalPermissionDenied: return "Blocked";
+      case GpsState.internalServiceOff: return "Off";
+      case GpsState.noProvider:         return "No GPS";
+      case GpsState.externalFix:        return "ADS-B";
+      case GpsState.externalNoOwnship:  return "No Own";
+      case GpsState.externalNoData:     return "No Data";
+    }
+  }
+
+  /// One-line explanation shared by the warnings drawer and diagnostics.
+  String get gpsStateMessage {
+    switch (gpsState) {
+      case GpsState.internalFix:
+        return "Position from this device's own GPS.";
+      case GpsState.internalSearching:
+        return "This device has a GPS but has not acquired a fix. Move to an open area with a clear view of the sky.";
+      case GpsState.internalPermissionDenied:
+        return "Location access is denied for AvareX. Grant it in device settings.";
+      case GpsState.internalServiceOff:
+        return "Location services are turned off on this device. Turn them on in device settings.";
+      case GpsState.noProvider:
+        return "This computer has no GPS or location provider. That cannot be changed here -- use an external GPS or ADS-B receiver. ADS-B traffic and weather still work without a position.";
+      case GpsState.externalFix:
+        return "Position from the external ADS-B/GPS receiver.";
+      case GpsState.externalNoOwnship:
+        return "The ADS-B receiver is connected but is not sending an ownship position, so it likely has no GPS fix of its own. Traffic and weather still work.";
+      case GpsState.externalNoData:
+        return "No data from an external receiver. Check that you are joined to its Wi-Fi network and that it is powered on.";
+    }
+  }
+
+  /// True when position acquisition is in a state the pilot should know about.
+  bool get gpsNeedsAttention =>
+      gpsState != GpsState.internalFix && gpsState != GpsState.externalFix;
   final List<String> _exceptions = [];
 
   // for navigation on tabs
@@ -480,11 +544,12 @@ class Storage {
     ); // keep screen on
     // ask for GPS permission
 
-    gpsNotPermitted = await Gps().isPermissionDenied().onError((error, stackTrace) => true);
+    gpsNoProvider = await Gps().isProviderUnavailable().onError((error, stackTrace) => true);
+    gpsNotPermitted = !gpsNoProvider && await Gps().isPermissionDenied().onError((error, stackTrace) => false);
     if(gpsNotPermitted) {
       Gps().requestPermissions().onError((error, stackTrace) => {});
     }
-    gpsDisabled = await Gps().isDisabled().onError((error, stackTrace) => true);
+    gpsDisabled = !gpsNoProvider && await Gps().isDisabled().onError((error, stackTrace) => false);
 
     LatLng last = LatLng(settings.getCenterLatitude(), settings.getCenterLongitude());
     position = Gps.fromLatLng(last);
@@ -587,21 +652,19 @@ class Storage {
       if((timeChange.value % 5) == 0) {
         if(gpsInternal) {
           // check system for any issues
-          bool permissionDenied = await Gps().isPermissionDenied().onError((error, stackTrace) => true);
+          gpsNoProvider = await Gps().isProviderUnavailable().onError((error, stackTrace) => true);
+          bool permissionDenied = !gpsNoProvider &&
+              await Gps().isPermissionDenied().onError((error, stackTrace) => false);
           if(permissionDenied == false && gpsNotPermitted == true) {
             // restart GPS since permission was denied, and now its allowed.
             // Only the GPS subscription -- the ADS-B sockets stay up.
             _startGpsStream();
           }
           gpsNotPermitted = permissionDenied;
-          gpsDisabled = await Gps().isDisabled().onError((error, stackTrace) => true);
-          warningChange.value =
-              gpsNotPermitted || gpsDisabled || gpsNoLock || dataExpired || chartsMissing || _exceptions.isNotEmpty;
+          gpsDisabled = !gpsNoProvider && await Gps().isDisabled().onError((error, stackTrace) => false);
         }
-        else {
-          // remove GPS warnings as its external now
-          warningChange.value = gpsNoLock || dataExpired || chartsMissing || _exceptions.isNotEmpty;
-        }
+        warningChange.value =
+            gpsNeedsAttention || dataExpired || chartsMissing || _exceptions.isNotEmpty;
       }
 
       if((timeChange.value % (10 * 60)) == 0) {
