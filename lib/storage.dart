@@ -101,11 +101,18 @@ class Storage {
   final StackWithOne<Position> _gpsStack = StackWithOne(Gps.fromLatLng(LatLng(0, 0)));
   ImageCache imageCache = ImageCache();
   int myAircraftIcao = 0;
-  bool cachedTrafficLayerOn = false;
+  /// True when the Traffic map layer is enabled. Read from settings rather than
+  /// cached out of map_screen.build(), so audible traffic alerting does not
+  /// depend on a widget rebuild having happened first.
+  bool get trafficLayerOn {
+    final List<String> layers = settings.getLayers();
+    final List<double> opacity = settings.getLayersOpacity();
+    final int index = layers.indexOf("Traffic");
+    return index >= 0 && index < opacity.length && opacity[index] > 0;
+  }
   String myAircraftCallsign = "";
   int ownshipMessageIcao = 0;
   String ownshipMessageCallsign = ""; // tail number reported by the ADS-B receiver, if any
-  bool _adsbWasConnected = false; // tracks ADS-B connection edge to reset ownship on disconnect
   final PfdData pfdData = PfdData(); // a place to drive PFD
   GpsRecorder tracks = GpsRecorder();
   late final FlightTimer flightTimer;
@@ -256,6 +263,26 @@ class Storage {
       return GpsState.internalSearching;
     }
     return GpsState.internalFix;
+  }
+
+  /// Three-state answer for the instrument tile: do I have a position, and if
+  /// not, what kind of not. Which source it came from is carried by the tile's
+  /// colour, so the text never has to say it.
+  String get positionTileLabel {
+    switch (gpsState) {
+      case GpsState.internalFix:
+      case GpsState.externalFix:
+        return "POS";
+      case GpsState.internalSearching:
+      case GpsState.externalNoOwnship:
+        return "NOFIX";
+      case GpsState.externalNoData:
+      case GpsState.noProvider:
+        return "NONE";
+      case GpsState.internalPermissionDenied:
+      case GpsState.internalServiceOff:
+        return "OFF";
+    }
   }
 
   /// Plain-language label for where position is coming from. Used in the
@@ -614,12 +641,15 @@ class Storage {
       timeChange.value++;
 
       // clear the ADS-B-derived ownship identity when the receiver disconnects
+      // A receiver whose own GPS has no fix keeps sending heartbeats while
+      // sending no ownship reports, so the connected->disconnected edge never
+      // fires and the tail number used to sit on screen indefinitely. Key the
+      // identity off the ownship stream's own freshness instead.
       final bool adsbConnected = adsbStatus.connected;
-      if (_adsbWasConnected && !adsbConnected) {
+      if (!adsbConnected || !adsbStatus.ownshipFresh) {
         ownshipMessageIcao = 0;
         ownshipMessageCallsign = "";
       }
-      _adsbWasConnected = adsbConnected;
 
       Position positionIn = _gpsStack.pop(); // used for testing and injecting GPS location
       position = Gps.clone(positionIn, area.geoAltitude);

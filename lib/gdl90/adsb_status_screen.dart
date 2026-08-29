@@ -344,19 +344,31 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
                         subtitle: Text(Storage().gpsStateMessage),
                         isThreeLine: true,
                       ),
-                      _statusTile(
-                        Icons.tune,
-                        "Source mode",
-                        Storage().gpsSourceMode,
-                        Colors.grey,
+                      // Mode selection lives here, not on a flight instrument:
+                      // it is a setup decision, and this screen has room to say
+                      // what each mode actually does.
+                      ListTile(
+                        dense: true,
+                        leading: const Icon(Icons.tune, color: Colors.grey),
+                        title: const Text("Source mode"),
+                        trailing: Text(Storage().gpsSourceMode,
+                            style: const TextStyle(fontWeight: FontWeight.bold)),
+                        subtitle: Text("${Storage().gpsSourceModeDescription}\nTap to change."),
+                        isThreeLine: true,
+                        onTap: () => setState(() => Storage().cycleGpsSourceMode()),
                       ),
+                      // Colour by whether the stream is still live, not by
+                      // whether anything ever arrived -- a count from minutes
+                      // ago is not a healthy receiver.
                       _statusTile(
                         Icons.flight,
                         "Ownship reports",
                         s.typeCount(0x0A) == 0
                             ? "none received"
                             : "${s.typeCount(0x0A)}  (${s.secondsSinceOwnship}s ago)",
-                        s.typeCount(0x0A) == 0 ? Colors.amber : Colors.green,
+                        s.typeCount(0x0A) == 0
+                            ? Colors.grey
+                            : (s.ownshipFresh ? Colors.green : Colors.amber),
                       ),
                       _statusTile(
                         Icons.radar,
@@ -364,7 +376,17 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
                         s.trafficMessageCount == 0
                             ? "none received"
                             : "${s.trafficMessageCount}  (${s.secondsSinceTraffic}s ago)",
-                        s.trafficMessageCount == 0 ? Colors.grey : Colors.green,
+                        s.trafficMessageCount == 0
+                            ? Colors.grey
+                            : (s.trafficFresh ? Colors.green : Colors.amber),
+                      ),
+                      _statusTile(
+                        Icons.favorite,
+                        "Last heartbeat",
+                        s.secondsSinceHeartbeat < 0
+                            ? "never"
+                            : "${s.secondsSinceHeartbeat}s ago",
+                        s.connected ? Colors.green : Colors.red,
                       ),
                       _boolTile(Icons.access_time, "UTC timing OK", s.utcOk),
                       _boolTile(Icons.power_settings_new, "UAT initialized", s.uatInitialized),

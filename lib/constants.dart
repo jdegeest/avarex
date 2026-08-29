@@ -58,7 +58,7 @@ class Constants {
   static const Color tfrColor = Color.fromARGB(255, 255, 0, 0);
   static const Color tfrColorFuture = Color.fromARGB(255, 150, 103, 0);
 
-  static const Color trafficColor = Colors.cyan;
+  static const Color trafficColor = Color(0xFF00C853); // matches TrafficPainter.kProximateColor
   static const Color trafficColorAlert = Colors.red;
 
 

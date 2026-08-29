@@ -13,6 +13,12 @@ enum TrafficFilter {
   range,    // outside the current traffic altitude filter
 }
 
+/// What the GDL90 "tt" field actually contains, per the misc nibble's low two
+/// bits. This was documented in parse() but never read, so an invalid track --
+/// where the byte is typically 0 -- was used as if the target were tracking due
+/// north, manufacturing conflicts that do not exist.
+enum TrackType { invalid, trueTrack, magneticHeading, trueHeading }
+
 class TrafficReportMessage extends Message {
   double altitude = -305;
   LatLng coordinates = const LatLng(0, 0);
@@ -23,6 +29,7 @@ class TrafficReportMessage extends Message {
   String callSign = "";
   bool airborne = false;
   bool extrapolated = false;
+  TrackType trackType = TrackType.invalid;
   int emitter = 0;
   int alertStatus = 0;
   int addressType = 0;
@@ -30,6 +37,30 @@ class TrafficReportMessage extends Message {
   int nacp = 0;
   int emergencyCode = 0;
   TrafficFilter filter = TrafficFilter.none; // set by TrafficCache.putTraffic
+
+  /// Ground track in degrees TRUE, or null when the transmitter provided no
+  /// usable direction. Collision projection must skip targets returning null --
+  /// projecting them would be projecting the number zero.
+  ///
+  /// Magnetic heading is converted with the local declination. Note that both
+  /// heading forms are heading, not track: in wind they differ from the path
+  /// actually flown, so [groundTrackIsExact] reports which one this is.
+  double? get groundTrackTrue {
+    switch (trackType) {
+      case TrackType.invalid:
+        return null;
+      case TrackType.trueTrack:
+      case TrackType.trueHeading:
+        return heading;
+      case TrackType.magneticHeading:
+        return (heading + Storage().area.variation + 360) % 360;
+    }
+  }
+
+  /// True only when the transmitter reported an actual ground track. Heading
+  /// based values carry an extra wind-driven error the projection should allow
+  /// for.
+  bool get groundTrackIsExact => trackType == TrackType.trueTrack;
 
   TrafficReportMessage(super.type);
 
@@ -75,6 +106,7 @@ class TrafficReportMessage extends Message {
      */
     airborne = (message[11].toInt() & 0x08) != 0;
     extrapolated = (message[11].toInt() & 0x04) != 0;
+    trackType = TrackType.values[message[11].toInt() & 0x03];
 
     // navigation integrity / accuracy categories
     nic = (message[12].toInt() & 0xF0) >> 4;

@@ -55,7 +55,11 @@ class AdsbStatus {
   bool logPaused = false;
 
   int _lastMsHeartbeat = 0; // 0 => never received a heartbeat
-  bool gpsValid = false;
+  bool _gpsValidRaw = false;
+  /// The heartbeat's GPS-valid bit, but only meaningful while heartbeats are
+  /// actually arriving -- it is otherwise a latched value from whenever the
+  /// receiver was last heard.
+  bool get gpsValid => connected && _gpsValidRaw;
   bool utcOk = false;
   bool uatInitialized = false;
   bool maintRequired = false;
@@ -93,6 +97,16 @@ class AdsbStatus {
   int get secondsSinceTraffic => _secondsSince(_lastMsTraffic);
   int get secondsSinceOwnship => _secondsSince(_lastMsOwnship);
 
+  /// A receiver can keep sending heartbeats while sending no ownship position
+  /// (its own GPS has no fix). Freshness of each stream is therefore separate
+  /// from whether the receiver is connected at all.
+  static const int _ownshipStaleS = 15;
+  static const int _trafficStaleS = 60;
+  bool get ownshipFresh =>
+      _lastMsOwnship != 0 && secondsSinceOwnship <= _ownshipStaleS;
+  bool get trafficFresh =>
+      _lastMsTraffic != 0 && secondsSinceTraffic <= _trafficStaleS;
+
   // average decoded-message rate since counters were last reset
   double get messagesPerSecond {
     final int elapsedMs = DateTime.now().millisecondsSinceEpoch - _diagStartMs;
@@ -120,7 +134,7 @@ class AdsbStatus {
 
   void setHeartbeat(HeartbeatMessage m) {
     _lastMsHeartbeat = DateTime.now().millisecondsSinceEpoch;
-    gpsValid = m.gpsValid;
+    _gpsValidRaw = m.gpsValid;
     utcOk = m.utcOk;
     uatInitialized = m.uatInitialized;
     maintRequired = m.maintRequired;

@@ -48,6 +48,12 @@ class Traffic {
     return isOldAt(DateTime.now().millisecondsSinceEpoch);
   }
 
+  /// A target we have not heard from recently. Its drawn position is the last
+  /// one reported, so it is shown greyed rather than as live traffic.
+  static const int staleMs = 5000;
+  bool isStaleAt(int nowMs) => (nowMs - message.time.millisecondsSinceEpoch) > staleMs;
+  bool get isStale => isStaleAt(DateTime.now().millisecondsSinceEpoch);
+
   /// [isOld] against a caller-supplied clock reading. The scans below run this
   /// per entry per message, so the DateTime allocation is hoisted to the caller.
   bool isOldAt(int nowMs) {
@@ -147,6 +153,22 @@ class TrafficCache {
     ("10,000 ft", 10000),
   ];
 
+  /// Repaint throttle for traffic arrival. Reports can arrive hundreds of times
+  /// a second; the map does not need to repaint that often.
+  int _lastNotifyMs = 0;
+  static const int _notifyIntervalMs = 250;
+
+  /// Tell the map that traffic changed. Driven by traffic *arriving*, not by
+  /// the position clock -- ADS-B display must not depend on having a GPS fix.
+  void _notifyTrafficChanged() {
+    final int nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (nowMs - _lastNotifyMs < _notifyIntervalMs) {
+      return;
+    }
+    _lastNotifyMs = nowMs;
+    Storage().trafficChange.value++;
+  }
+
   /// Keep traffic within [feet] of ownship altitude; 0 keeps everything.
   void setAltitudeFilter(int feet) {
     _kTrafficAltDiffThresholdFt = feet <= 0 ? Constants.kMaxIntValue : feet;
@@ -212,6 +234,11 @@ class TrafficCache {
     // No entry cap: stale reports are retired by age in getTraffic() and in the
     // 1 Hz sweep, which bounds the map to aircraft heard in the last minute.
 
+    // Repaint because traffic arrived. Previously the only repaint signal came
+    // from the position timer, so with no GPS fix nothing appeared until an
+    // unrelated rebuild (a tap) happened to redraw the layer.
+    _notifyTrafficChanged();
+
     // process any audible alerts from traffic (if enabled)
     handleAudibleAlerts();
   }
@@ -232,7 +259,7 @@ class TrafficCache {
       return;
     }
     // process when traffic layer is on
-    if (Storage().settings.isAudibleAlertsEnabled() && Storage().cachedTrafficLayerOn) {
+    if (Storage().settings.isAudibleAlertsEnabled() && Storage().trafficLayerOn) {
       _audibleAlertsHandling = true;   
       TrafficAlerts.getAndStartTrafficAlerts().then((alerts) {
         // TODO: Set all of the "pref" settings from new Storage params (which in turn have a config UI?)
@@ -292,19 +319,28 @@ class TrafficPainter extends AbstractCachedCustomPainter {
   static const double _kGroundTrafficOpacity = 0.5;
 
   // Avare-style fill colors
-  static const Color kProximateColor = Colors.cyan;       // normal, no alert
-  static const Color kAdvisoryColor = Color(0xFFFF3535);  // threat
-  static const Color kResolutionColor = Color(0xFFFF3535); // threat
+  // Three tiers, so the colour carries information instead of just "near/not".
+  // Previously advisory and resolution were the same red and the painter never
+  // branched on resolution at all.
+  static const Color kProximateColor = Color(0xFF00C853);  // green: no conflict
+  static const Color kAdvisoryColor = Color(0xFFFFC107);   // amber: co-altitude and near
+  static const Color kResolutionColor = Color(0xFFFF3535); // red: converging on a conflict
   static const Color _kGroundColor = Color(0xFF836539);   // brown for ground traffic
+  static const Color kStaleColor = Color(0xFF9E9E9E);      // grey: not heard recently
   static const Color _kOutlineColor = Color(0xFF000000);  // black outline
 
   final TrafficAlertLevel _alertLevel;
   final bool _isAirborne;
+  final bool _isStale;
 
   TrafficPainter(Traffic traffic)
     : _alertLevel = traffic.alertLevel,
       _isAirborne = traffic.message.airborne,
-      super([traffic.alertLevel.index, traffic.message.airborne ? 1 : 0],
+      _isStale = traffic.isStale,
+      // staleness is part of the icon's appearance, so it must be part of the
+      // cache key or a greyed icon would be served for a live target
+      super([traffic.alertLevel.index, traffic.message.airborne ? 1 : 0,
+             traffic.isStale ? 1 : 0],
         false, const Size(_kCanvasSize, _kCanvasSize));
 
   @override
@@ -312,12 +348,18 @@ class TrafficPainter extends AbstractCachedCustomPainter {
     final double opacity = _isAirborne ? 1.0 : _kGroundTrafficOpacity;
 
     final Color fillColor;
-    if (!_isAirborne) {
+    if (_isStale) {
+      // Position is from more than TrafficPainter staleness ago; do not paint it
+      // as though it were a current report.
+      fillColor = kStaleColor;
+    } else if (!_isAirborne) {
       fillColor = _kGroundColor;
-    } else if (_alertLevel == TrafficAlertLevel.none) {
-      fillColor = kProximateColor;
-    } else {
+    } else if (_alertLevel == TrafficAlertLevel.resolution) {
+      fillColor = kResolutionColor;
+    } else if (_alertLevel == TrafficAlertLevel.advisory) {
       fillColor = kAdvisoryColor;
+    } else {
+      fillColor = kProximateColor;
     }
 
     const Offset center = Offset(_kCenter, _kCenter);

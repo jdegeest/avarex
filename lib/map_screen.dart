@@ -481,7 +481,6 @@ class MapScreenState extends State<MapScreen> {
 
     _maxZoom = ChartCategory.chartTypeToZoom(_type);
     // this is called many times on the map so we need to be efficient.
-    Storage().cachedTrafficLayerOn = _layersOpacity[_layers.indexOf("Traffic")] > 0;
 
     //add layers
     final List<Widget> layers = [];
@@ -859,7 +858,9 @@ class MapScreenState extends State<MapScreen> {
             builder: (context, value, _) {
               return PolylineLayer(
                 polylines: Storage().trafficCache.getTraffic()
-                  .where((t) => t.message.airborne && t.message.velocity > 0)
+                  // A one-minute projection drawn from a position we have not
+                  // confirmed in seconds is fiction, so stale targets get no line.
+                  .where((t) => t.message.airborne && t.message.velocity > 0 && !t.isStale)
                   .map((t) {
                     final Color lineColor = t.isThreat
                         ? Constants.trafficColorAlert

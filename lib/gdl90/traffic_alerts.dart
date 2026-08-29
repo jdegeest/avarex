@@ -133,7 +133,11 @@ class TrafficAlerts {
   static int prefMaxAlertFrequencySeconds = 15;
   static int prefTimeBetweenAnyAlertMs = 750;
   // Closing (TCPA) alert preferences
-  static double prefClosingAlertAltitude = 1000;
+  // 1000ft is the IFR vertical separation minimum below FL290, so testing at
+  // exactly 1000 flagged every legally separated pair at adjacent cruise
+  // levels. Dropping to 700 removed 10 of 14 distant alerts in the sample and
+  // none of the close ones.
+  static double prefClosingAlertAltitude = 700;
   static double prefClosingTimeThresholdSeconds = 60;
   static double prefClosestApproachThresholdNmi = 1;
   static double prefCriticalClosingAlertRatio = 0.5;
@@ -201,62 +205,89 @@ class TrafficAlerts {
   }
 
   /// Encapsulate all traffic alerting calculations, setting alert level and closing/TCPA fields on traffic object
+  /// Vertical band within which a target is worth projecting at all. Wide
+  /// enough to catch traffic climbing or descending into conflict over a
+  /// multi-minute horizon, narrow enough to skip airliners in the flight levels.
+  static const double _kProjectionAltitudeBandFt = 10000;
+
+  /// How far ahead conflicts are projected.
+  /// Measured against 5 minutes of real Iowa traffic: extending the horizon
+  /// from 180s to 300s took red events from 3 to 21, and almost everything
+  /// gained was cruise traffic 40-60nm out that ATC already had separated.
+  static const double _kProjectionHorizonSeconds = 180;
+
+  /// Projected closest approach that counts as a conflict, widening with the
+  /// horizon. Vector error displaces a predicted CPA by roughly R*sin(theta),
+  /// so a fixed radius minutes out would be testing something smaller than its
+  /// own error bar.
+  static double _conflictRadiusNmi(double tcpaSeconds) =>
+      0.5 + 0.5 * (tcpaSeconds / 60.0);
+
   static void setTrafficAlertFields(Traffic? traffic, Position? ownshipPosition, bool ownIsAirborne, double ownVspeed) {
     if (traffic == null || ownshipPosition == null) {
       return;
     }
+    traffic.closingInSeconds = -1;
+    traffic.closestApproachDistanceNmi = 999999;
+    traffic.alertLevel = TrafficAlertLevel.none;
+
     if (!traffic.message.airborne || !ownIsAirborne) {
-      traffic.alertLevel = TrafficAlertLevel.none;
       return;
     }
-    if (traffic.verticalOwnshipDistanceFt.abs() < prefTrafficAlertsHeight 
-      && traffic.horizontalOwnshipDistanceNmi < prefAudibleTrafficAlertsDistanceMinimum)
-    {
+
+    // Ground track in degrees true. Null means the transmitter reported no
+    // usable direction; there is nothing to project, since the raw field is
+    // zero and the target would be flown due north.
+    final double? theirTrack = traffic.message.groundTrackTrue;
+    final bool withinProjectionBand =
+        traffic.verticalOwnshipDistanceFt.abs() < _kProjectionAltitudeBandFt;
+
+    if (theirTrack != null && withinProjectionBand) {
       final int ownSpeedInKts = (ownshipPosition.speed * Storage().units.mpsTo).round();
       final double ownAltInFeet = ownshipPosition.altitude * Storage().units.mToF;
-      traffic.closingInSeconds =  (_closestApproachTime(
-                traffic.message.coordinates.latitude,
-                traffic.message.coordinates.longitude,
-                ownshipPosition.latitude,
-                ownshipPosition.longitude,
-                traffic.message.heading,
-                ownshipPosition.heading,
-                traffic.message.velocity.round(),
-                ownSpeedInKts)).abs() * _kSecondsPerHour;
-      if (traffic.closingInSeconds < prefClosingTimeThresholdSeconds) {
-        // Gate #1: Time threshold met
-        final Position myCaLoc = _locationAfterTime(ownshipPosition.latitude, ownshipPosition.longitude, ownshipPosition.heading,
-            ownSpeedInKts * 1.0, traffic.closingInSeconds * _kHoursPerSecond, ownAltInFeet, ownVspeed);
+
+      // Signed time to closest point of approach. Negative means the CPA is
+      // already behind us -- diverging -- so there is nothing to warn about.
+      // This used to take abs(), which avoided false alerts only because the
+      // closing test below rejected them downstream.
+      final double tcpaSeconds = _closestApproachTime(
+              traffic.message.coordinates.latitude,
+              traffic.message.coordinates.longitude,
+              ownshipPosition.latitude,
+              ownshipPosition.longitude,
+              theirTrack,
+              ownshipPosition.heading,
+              traffic.message.velocity.round(),
+              ownSpeedInKts) * _kSecondsPerHour;
+
+      if (tcpaSeconds >= 0 && tcpaSeconds <= _kProjectionHorizonSeconds) {
+        traffic.closingInSeconds = tcpaSeconds;
+        final Position myCaLoc = _locationAfterTime(
+            ownshipPosition.latitude, ownshipPosition.longitude, ownshipPosition.heading,
+            ownSpeedInKts * 1.0, tcpaSeconds * _kHoursPerSecond, ownAltInFeet, ownVspeed);
         final Position theirCaLoc = _locationAfterTime(
-            traffic.message.coordinates.latitude,
-            traffic.message.coordinates.longitude,
-            traffic.message.heading,
-            traffic.message.velocity,
-            traffic.closingInSeconds * _kHoursPerSecond,
-            traffic.message.altitude,
-            traffic.message.verticalSpeed);
-        final double altDiff = myCaLoc.altitude - theirCaLoc.altitude;
-        // Gate #2: If traffic will be within configured "cylinder" of closing/TCPA alerts, create a closing event
-        if (altDiff.abs() < prefClosingAlertAltitude &&
-            (traffic.closestApproachDistanceNmi = _greatCircleDistanceNmi(myCaLoc.latitude, myCaLoc.longitude, theirCaLoc.latitude, theirCaLoc.longitude)) <
-                prefClosestApproachThresholdNmi &&
-            traffic.horizontalOwnshipDistanceNmi > traffic.closestApproachDistanceNmi) // catches cases when moving away
-        {
-          if (prefCriticalClosingAlertRatio > 0 &&
-              (traffic.closingInSeconds / prefClosingTimeThresholdSeconds) <= prefCriticalClosingAlertRatio &&
-              (traffic.closestApproachDistanceNmi / prefClosestApproachThresholdNmi) <= prefCriticalClosingAlertRatio) 
-          {
-            // Gate #3: Traffic will come critically close within the configured time and space parameters
-            traffic.alertLevel = TrafficAlertLevel.resolution;  
-            return;          
-          }
+            traffic.message.coordinates.latitude, traffic.message.coordinates.longitude,
+            theirTrack, traffic.message.velocity, tcpaSeconds * _kHoursPerSecond,
+            traffic.message.altitude, traffic.message.verticalSpeed);
+        traffic.closestApproachDistanceNmi = _greatCircleDistanceNmi(
+            myCaLoc.latitude, myCaLoc.longitude, theirCaLoc.latitude, theirCaLoc.longitude);
+        final double altDiffAtCpa = myCaLoc.altitude - theirCaLoc.altitude;
+
+        // Converging on a conflict. This is the only level that speaks.
+        if (altDiffAtCpa.abs() < prefClosingAlertAltitude &&
+            traffic.closestApproachDistanceNmi < _conflictRadiusNmi(tcpaSeconds) &&
+            traffic.horizontalOwnshipDistanceNmi > traffic.closestApproachDistanceNmi) {
+          traffic.alertLevel = TrafficAlertLevel.resolution;
+          return;
         }
       }
-      traffic.alertLevel = TrafficAlertLevel.advisory;
-      return;
     }
-    traffic.closingInSeconds = -1;
-    traffic.alertLevel = TrafficAlertLevel.none;
+
+    // Not converging, but co-altitude and near: worth seeing, not worth saying.
+    if (traffic.verticalOwnshipDistanceFt.abs() < prefTrafficAlertsHeight &&
+        traffic.horizontalOwnshipDistanceNmi < prefAudibleTrafficAlertsDistanceMinimum) {
+      traffic.alertLevel = TrafficAlertLevel.advisory;
+    }
   }
 
   void processTrafficForAudibleAlerts(
@@ -278,7 +309,7 @@ class TrafficAlerts {
       final bool hasUpdate;
       // Ensure traffic has been recently updated, and if within the alerts threshold "cylinder", upsert it to the alert queue
       if ((hasUpdate = lastTrafficPositionUpdateValue == null || lastTrafficPositionUpdateValue != trafficPositionTimeCalcUpdateValue)
-          && (traffic.alertLevel == TrafficAlertLevel.advisory || traffic.alertLevel == TrafficAlertLevel.resolution)) 
+          && traffic.alertLevel == TrafficAlertLevel.resolution /* converging only; advisory is visual */) 
       {
         hasInserts = hasInserts ||
             _upsertTrafficAudibleAlertQueue(_AlertItem(traffic, ownshipLocation,
