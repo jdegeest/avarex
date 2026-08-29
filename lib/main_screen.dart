@@ -445,14 +445,13 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver { //
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
-    switch (state) {
-      case AppLifecycleState.resumed:
-        // start GPS
-        Storage().startIO();
-        break;
-      default:
-        Storage().stopIO();
-        break;
+    // Only ever ensure IO is running. The ADS-B/GPS connection is deliberately
+    // not torn down here: AppLifecycleState.inactive fires for transient events
+    // like the window losing focus, a notification shade opening, or an incoming
+    // call, and closing the UDP sockets for those made traffic drop out
+    // constantly. startIO() is idempotent, so repeated resumes are harmless.
+    if (state == AppLifecycleState.resumed) {
+      Storage().startIO();
     }
   }
 }

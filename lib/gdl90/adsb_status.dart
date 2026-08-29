@@ -68,7 +68,7 @@ class AdsbStatus {
   int parseErrors = 0;                 // exceptions while parsing a decoded frame
   final Map<int, int> typeCounts = {}; // per-message-type received counts
   int filteredOwnshipCount = 0;        // traffic dropped as ownship match
-  int filteredRangeCount = 0;          // traffic dropped for being out of range
+  int filteredRangeCount = 0;          // traffic dropped by the altitude filter
   int lastUplinkCount = 0;             // uplink msg count from last heartbeat
   int lastTrafficCount = 0;            // traffic msg count from last heartbeat
   int _diagStartMs = DateTime.now().millisecondsSinceEpoch; // for average rate
@@ -162,6 +162,12 @@ class AdsbStatus {
   // Record a received GDL90 message for the log. Skipped while paused or when
   // its type is filtered out (this is what keeps frequent AHRS messages from
   // flooding the limited buffer).
+  // True when [logMessage] would actually retain the entry. Callers use this to
+  // skip building the decoded/hex strings for frames that will be discarded --
+  // those arguments are evaluated before logMessage runs, so without this guard
+  // every AHRS frame pays full decode + hex cost only to be dropped below.
+  bool willLog(int typeId) => !logPaused && _typeShown(typeId);
+
   void logMessage(int typeId, String type, String summary, String decoded, String raw, {TrafficFilter filter = TrafficFilter.none}) {
     // Count every decoded frame for diagnostics, regardless of the display
     // filter/pause (so counters reflect actual reception, not what's shown).

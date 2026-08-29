@@ -3,6 +3,7 @@ import 'package:avaremp/utils/elevation_tile_provider.dart';
 import 'package:avaremp/utils/image_utils.dart';
 import 'package:avaremp/utils/mbtiles_layer.dart';
 import 'package:avaremp/utils/path_utils.dart';
+import 'package:avaremp/utils/full_screen.dart';
 import 'package:avaremp/utils/toast.dart';
 import 'package:avaremp/cap/cap_grid_layer.dart';
 import 'package:avaremp/weather/ceiling_layer.dart';
@@ -66,6 +67,15 @@ class MapScreenState extends State<MapScreen> {
   int _maxZoom = ChartCategory.chartTypeToZoom(Storage().settings.getChartType());
   final MapController _controller = MapController();
   // get layers and states from settings
+  bool _isFullScreen = Storage().settings.getFullScreen();
+
+  Future<void> _toggleFullScreen() async {
+    final bool next = await FullScreen.set(!_isFullScreen);
+    setState(() {
+      _isFullScreen = next;
+    });
+  }
+
   final List<String> _layers = Storage().settings.getLayers();
   final List<double> _layersOpacity = Storage().settings.getLayersOpacity();
   final List<String> _weatherProducts = Storage().settings.getWeatherProducts();
@@ -94,6 +104,12 @@ class MapScreenState extends State<MapScreen> {
     "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/{z}/{x}/{y}.png"
   ];
 
+  // flutter_map defaults are keepBuffer 2 / panBuffer 1. Retaining and
+  // prefetching more tiles trades memory for visibly less pop-in while panning,
+  // so desktop gets larger buffers and mobile keeps the original footprint.
+  static final int _tileKeepBuffer = Constants.isDesktop ? 3 : 1;
+  static final int _tilePanBuffer = Constants.isDesktop ? 2 : 1;
+
   TileLayer _nexradLayer = TileLayer(
     maxNativeZoom: 5,
     keepBuffer: 1, // hold fewer off-screen tiles decoded in memory
@@ -104,7 +120,8 @@ class MapScreenState extends State<MapScreen> {
 
   final TileLayer _topoLayer = TileLayer(
     maxNativeZoom: 16,
-    keepBuffer: 1, // hold fewer off-screen tiles decoded in memory
+    keepBuffer: _tileKeepBuffer,
+    panBuffer: _tilePanBuffer,
     userAgentPackageName: 'com.apps4av.avarex',
     urlTemplate: "https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/WMTS/tile/1.0.0/USGSTopo/default/default028mm/{z}/{y}/{x}.png",
     tileProvider: MapNetworkTileProvider()
@@ -472,7 +489,8 @@ class MapScreenState extends State<MapScreen> {
     final TileLayer chartLayer = TileLayer(
         tms: true,
         maxNativeZoom: _maxZoom,
-        keepBuffer: 1, // hold fewer off-screen tiles decoded in memory
+        keepBuffer: _tileKeepBuffer,
+        panBuffer: _tilePanBuffer,
         tileProvider: ChartTileProvider(),
         urlTemplate: "${Storage().dataDir}/tiles/"
           "${ChartCategory.chartTypeToIndex(_type)}/"
@@ -1476,21 +1494,6 @@ class MapScreenState extends State<MapScreen> {
                                 icon: CircleAvatar(radius: iconRadius, backgroundColor: Theme.of(context).scaffoldBackgroundColor.withValues(alpha: 0.7),
                                     child: const Icon(Icons.cloud)),
                               ),
-                            if (_layersOpacity[_layers.indexOf("Traffic")] > 0)
-                              IconButton(
-                                tooltip: "Traffic Volume:\n"
-                                    "S: 20 Aircraft, 3000ft, 10NM\n"
-                                    "M: 200 Aircraft, 6000ft, 50NM\n"
-                                    "L: 1000 Aircraft, 30000ft, 500NM",
-                                onPressed: () {
-                                  setState(() {
-                                    Storage().settings.setTrafficPuckSize(TrafficCache.adjustPuck(Storage().settings.getTrafficPuckSize()));
-                                  });
-                                  Storage().trafficCache.changeArea(Storage().settings.getTrafficPuckSize());
-                                },
-                                icon: CircleAvatar(radius: iconRadius, backgroundColor: Theme.of(context).scaffoldBackgroundColor.withValues(alpha: 0.7),
-                                    child: Text(Storage().settings.getTrafficPuckSize())),
-                              ),
                           ],
                         ),
                       )
@@ -1678,6 +1681,14 @@ class MapScreenState extends State<MapScreen> {
                                         child: const Icon(Icons.layers)),
                                     onPressed: () => _showLayerSelector(context),
                                   ),
+
+                                  if (FullScreen.supported)
+                                    IconButton(
+                                      tooltip: _isFullScreen ? "Leave full screen" : "Enter full screen",
+                                      icon: CircleAvatar(radius: iconRadius, backgroundColor: Theme.of(context).scaffoldBackgroundColor.withValues(alpha: 0.7),
+                                          child: Icon(_isFullScreen ? Icons.fullscreen_exit : Icons.fullscreen)),
+                                      onPressed: _toggleFullScreen,
+                                    ),
                                 ]
                               ),
                           )
@@ -1815,6 +1826,10 @@ class MapScreenState extends State<MapScreen> {
           layers: _layers,
           layersOpacity: _layersOpacity,
           getLayerIcon: _getLayerIcon,
+          onTrafficAltitudeFilterChange: (int feet) {
+            Storage().settings.setTrafficAltitudeFilter(feet);
+            Storage().trafficCache.setAltitudeFilter(feet);
+          },
           onLayerChange: (index, value) {
             double last = _layersOpacity[index];
             if (_layers[index] == "Tracks") {
@@ -2113,12 +2128,14 @@ class _LayerSelectorOverlay extends StatefulWidget {
   final List<double> layersOpacity;
   final IconData Function(String) getLayerIcon;
   final void Function(int, double) onLayerChange;
+  final void Function(int) onTrafficAltitudeFilterChange;
 
   const _LayerSelectorOverlay({
     required this.layers,
     required this.layersOpacity,
     required this.getLayerIcon,
     required this.onLayerChange,
+    required this.onTrafficAltitudeFilterChange,
   });
 
   @override
@@ -2127,11 +2144,48 @@ class _LayerSelectorOverlay extends StatefulWidget {
 
 class _LayerSelectorOverlayState extends State<_LayerSelectorOverlay> {
   late List<double> _localOpacity;
+  late int _altitudeFilterFt;
 
   @override
   void initState() {
     super.initState();
     _localOpacity = List.from(widget.layersOpacity);
+    _altitudeFilterFt = Storage().settings.getTrafficAltitudeFilter();
+  }
+
+  /// Vertical filter for the Traffic layer, shown beneath it while it is on.
+  /// Replaces the map's old S/M/L cycle button; the default keeps all traffic.
+  Widget _altitudeFilter(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(48, 0, 12, 8),
+      child: Row(
+        children: [
+          Text("Altitude",
+              style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.outline)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              children: TrafficCache.altitudeFilters.map((filter) {
+                return ChoiceChip(
+                  label: Text(filter.$1, style: const TextStyle(fontSize: 12)),
+                  selected: _altitudeFilterFt == filter.$2,
+                  visualDensity: VisualDensity.compact,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  onSelected: (_) {
+                    setState(() {
+                      _altitudeFilterFt = filter.$2;
+                    });
+                    widget.onTrafficAltitudeFilterChange(filter.$2);
+                  },
+                );
+              }).toList(),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -2210,7 +2264,7 @@ class _LayerSelectorOverlayState extends State<_LayerSelectorOverlay> {
                     itemBuilder: (context, visibleIndex) {
                       final int index = visible[visibleIndex];
                       final isOn = _localOpacity[index] > 0;
-                      return Padding(
+                      final Widget row = Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
                         child: Row(
                           children: [
@@ -2300,6 +2354,13 @@ class _LayerSelectorOverlayState extends State<_LayerSelectorOverlay> {
                             ),
                           ],
                         ),
+                      );
+                      if (widget.layers[index] != "Traffic" || !isOn) {
+                        return row;
+                      }
+                      return Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [row, _altitudeFilter(context)],
                       );
                     },
                   );

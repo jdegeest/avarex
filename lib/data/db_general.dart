@@ -1,3 +1,4 @@
+import 'package:avaremp/utils/app_log.dart';
 import 'package:universal_io/io.dart';
 import 'package:flutter/foundation.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -25,6 +26,10 @@ class DbGeneral {
       return await db.rawQuery(sql, params);
     }
     catch (error) {
+      // Callers treat an empty result as "no rows", which is indistinguishable
+      // from a failed query -- getGeoInfo() for one falls back to (0, 0), which
+      // silently zeroes magnetic declination. Log so these are not invisible.
+      AppLog.logMessage("DB query failed: $error :: $sql");
       return [];
     }
   }
@@ -34,6 +39,7 @@ class DbGeneral {
       return await db.insert(table, values);
     }
     catch (error) {
+      AppLog.logMessage("DB insert failed on $table: $error");
       return -1;
     }
   }
@@ -43,6 +49,7 @@ class DbGeneral {
       return await db.insert(table, values, conflictAlgorithm: ConflictAlgorithm.replace);
     }
     catch (error) {
+      AppLog.logMessage("DB replace failed on $table: $error");
       return -1;
     }
   }

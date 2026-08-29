@@ -1,5 +1,6 @@
 
 import 'dart:core';
+import 'package:avaremp/constants.dart';
 import 'package:avaremp/storage.dart' show Storage;
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
@@ -61,14 +62,19 @@ class WarningsWidgetState extends State<WarningsWidget> {
         subtitle: const Text("Tapping on the issue may help you resolve it."),
         leading: Icon(MdiIcons.alertCircle, color: Colors.red,), dense: false,)];
 
+    // Desktop has no per-app location permission and no location-services
+    // toggle, and Geolocator.openAppSettings()/openLocationSettings() are no-ops
+    // there -- so the mobile wording and the tap-to-fix action are both wrong.
     String gpsPermissionMessage = !widget.gpsNotPermitted ? "" :
-    "GPS permission is denied, please enable it in device settings.";
+    (Constants.isDesktop
+        ? "No location provider is available on this computer. Use an external GPS or ADS-B receiver instead; ADS-B traffic and weather work without a position fix."
+        : "GPS permission is denied, please enable it in device settings.");
     if(gpsPermissionMessage.isNotEmpty) {
-      list.add(ListTile(title: const Text("GPS Permission"),
+      list.add(ListTile(title: Text(Constants.isDesktop ? "Location" : "GPS Permission"),
           leading: const Icon(Icons.gpp_good_sharp),
           subtitle: Text(gpsPermissionMessage),
           dense: true,
-          onTap: () {
+          onTap: Constants.isDesktop ? null : () {
             try {
               Geolocator.openAppSettings();
             }
@@ -80,13 +86,15 @@ class WarningsWidgetState extends State<WarningsWidget> {
     }
 
     String gpsEnabledMessage = !widget.gpsDisabled ? "" :
-    "GPS is disabled, please enable it in device settings.";
+    (Constants.isDesktop
+        ? "No location service is running on this computer. Connect an external GPS or ADS-B receiver over UDP, or set GPS Source to External."
+        : "GPS is disabled, please enable it in device settings.");
     if(gpsEnabledMessage.isNotEmpty) {
       list.add(ListTile(title: const Text("GPS"),
           leading: const Icon(Icons.gps_off_sharp),
           subtitle: Text(gpsEnabledMessage),
           dense: true,
-          onTap: () {Geolocator.openLocationSettings(); Scaffold.of(context).closeEndDrawer();}));
+          onTap: Constants.isDesktop ? null : () {Geolocator.openLocationSettings(); Scaffold.of(context).closeEndDrawer();}));
     }
 
     String gpsLockedMessage = !widget.gpsNoLock ? "" :

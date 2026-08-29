@@ -389,7 +389,7 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
                     final String? filterTag = m.filter == TrafficFilter.ownship
                         ? "filtered: ownship"
                         : (m.filter == TrafficFilter.range
-                            ? "filtered: out of range"
+                            ? "filtered: altitude"
                             : null);
                     final String titleText = [
                       m.type,

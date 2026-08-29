@@ -354,28 +354,46 @@ class Storage {
     }
   }
 
+  /// Guards against stacking a second set of sockets/subscriptions on top of a
+  /// live one. startIO() is called on every resume, so it must be a no-op when
+  /// IO is already running.
+  bool _ioStarted = false;
+
+  /// Subscribes to the internal GPS. Separate from [startIO] so a GPS-only event
+  /// (permission granted) can restart just this, without closing the ADS-B
+  /// sockets -- doing that took traffic down for an unrelated reason.
+  void _startGpsStream() {
+    if(gpsDisabled) {
+      return;
+    }
+    _gpsStream?.cancel(); // never overwrite a live subscription
+    _gpsStream = _gps.getStream();
+    _gpsStream?.onDone(() {});
+    _gpsStream?.onError((obj) {});
+    _gpsStream?.onData((data) {
+      // Skip internal GPS data when External mode is selected
+      if (gpsSourceMode == "External") {
+        return;
+      }
+      if (gpsInternal) {
+        if(Gps.isPositionCloseToZero(data)) {
+          return; // skip 0, 0 when GPS is not locked
+        }
+        _lastMsGpsSignal = DateTime.now().millisecondsSinceEpoch; // update time when GPS signal was last received
+        _gpsStack.push(data);
+        tracks.add(data);
+      } // provide internal GPS when external is not available
+    });
+  }
+
   void startIO() {
+    if (_ioStarted) {
+      return;
+    }
+    _ioStarted = true;
     // GPS data receive
     // start both external and internal
-    if(!gpsDisabled) {
-      _gpsStream = _gps.getStream();
-      _gpsStream?.onDone(() {});
-      _gpsStream?.onError((obj) {});
-      _gpsStream?.onData((data) {
-        // Skip internal GPS data when External mode is selected
-        if (gpsSourceMode == "External") {
-          return;
-        }
-        if (gpsInternal) {
-          if(Gps.isPositionCloseToZero(data)) {
-            return; // skip 0, 0 when GPS is not locked
-          }
-          _lastMsGpsSignal = DateTime.now().millisecondsSinceEpoch; // update time when GPS signal was last received
-          _gpsStack.push(data);
-          tracks.add(data);
-        } // provide internal GPS when external is not available
-      });
-    }
+    _startGpsStream();
 
     // GPS data receive
     _udpReceiver.start([4000, 43211, 49002], [false, false, false]);
@@ -384,15 +402,13 @@ class Storage {
     // starts streaming its Capstone (GDL90) ADS-B data. That data arrives on
     // UDP 4000 above and flows through the normal GDL90 decoder.
     AvidyneIfd().start();
-    try {
-      // Have traffic cache listen for GPS changes for distance calc and (resulting) audible alert changes
-      gpsChange.addListener(Storage().trafficCache.updateTrafficDistancesAndAlerts);
-    } catch (e) {
-      AppLog.logMessage("Error adding GPS traffic cache listener: $e");
-    }
   }
 
   void stopIO() {
+    if (!_ioStarted) {
+      return;
+    }
+    _ioStarted = false;
     try {
       _udpReceiver.finish();
     }
@@ -407,15 +423,10 @@ class Storage {
     }
     try {
       _gpsStream?.cancel();
+      _gpsStream = null;
     }
     catch(e) {
       AppLog.logMessage("Error stopping GPS: $e");
-    }
-    try {
-      // Have audible alerts stop listening for GPS changes
-      Storage().gpsChange.removeListener(trafficCache.handleAudibleAlerts);
-    } catch (e) {
-      AppLog.logMessage("Error removing GPS traffic cache listener: $e");
     }
   }
 
@@ -457,7 +468,7 @@ class Storage {
 
     await settings.initSettings();
     initGpsSourceMode();
-    trafficCache = TrafficCache(settings.getTrafficPuckSize());
+    trafficCache = TrafficCache(settings.getTrafficAltitudeFilter());
     themeNotifier = ValueNotifier<ThemeData>(Storage().settings.isLightMode() ? ThemeData.light() : ThemeData.dark());
     units = UnitConversion(settings.getUnits());
     flightTimer = FlightTimer(true, 0, timeChange);
@@ -535,6 +546,14 @@ class Storage {
       position = Gps.clone(positionIn, area.geoAltitude);
       gpsChange.value = position; // tell everyone
 
+      // Refresh traffic on the clock, not on GPS movement. gpsChange holds a
+      // Position, which has value equality including its timestamp, and
+      // Gps.clone copies that timestamp -- so with no GPS fix the same position
+      // is assigned every second, compares equal, and the notifier never fires.
+      // Traffic then reached the cache but the map layer was never told to
+      // repaint, so ADS-B targets never appeared without a fix.
+      trafficCache.updateTrafficDistancesAndAlerts();
+
       // update flight status
       flightStatus.update(position.speed);
 
@@ -570,9 +589,9 @@ class Storage {
           // check system for any issues
           bool permissionDenied = await Gps().isPermissionDenied().onError((error, stackTrace) => true);
           if(permissionDenied == false && gpsNotPermitted == true) {
-            // restart GPS since permission was denied, and now its allowed
-            stopIO();
-            startIO();
+            // restart GPS since permission was denied, and now its allowed.
+            // Only the GPS subscription -- the ADS-B sockets stay up.
+            _startGpsStream();
           }
           gpsNotPermitted = permissionDenied;
           gpsDisabled = await Gps().isDisabled().onError((error, stackTrace) => true);

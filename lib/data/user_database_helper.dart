@@ -454,7 +454,7 @@ class UserDatabaseHelper {
     final db = await database;
 
     if(db != null) {
-      await DbGeneral.query(db, "delete from settings where key=$key;");
+      await DbGeneral.query(db, "delete from settings where key = ?;", params: [key]);
     }
   }
 

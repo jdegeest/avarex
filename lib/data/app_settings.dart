@@ -244,12 +244,22 @@ class AppSettings {
     provider.setBool("key-signed", value);
   }
 
-  String getTrafficPuckSize() {
-    return provider.getValue("key-traffic-puck-size", defaultValue: "S") as String;
+  bool getFullScreen() {
+    return provider.getValue("key-full-screen", defaultValue: true) as bool;
   }
 
-  void setTrafficPuckSize(String value) {
-    provider.setString("key-traffic-puck-size", value);
+  void setFullScreen(bool value) {
+    provider.setBool("key-full-screen", value);
+  }
+
+  /// Vertical separation in feet beyond which traffic is hidden. 0 shows all
+  /// received traffic regardless of altitude, and is the default.
+  int getTrafficAltitudeFilter() {
+    return provider.getValue("key-traffic-altitude-filter", defaultValue: 0) as int;
+  }
+
+  void setTrafficAltitudeFilter(int value) {
+    provider.setInt("key-traffic-altitude-filter", value);
   }
 
   bool showIntro() {

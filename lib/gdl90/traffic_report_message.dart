@@ -10,7 +10,7 @@ import 'message.dart';
 enum TrafficFilter {
   none,     // displayed
   ownship,  // matched our ownship ICAO/callsign ("that's us")
-  range,    // outside the current puck distance/altitude window
+  range,    // outside the current traffic altitude filter
 }
 
 class TrafficReportMessage extends Message {

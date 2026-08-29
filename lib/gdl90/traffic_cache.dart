@@ -45,9 +45,14 @@ class Traffic {
   }
 
   bool isOld() {
+    return isOldAt(DateTime.now().millisecondsSinceEpoch);
+  }
+
+  /// [isOld] against a caller-supplied clock reading. The scans below run this
+  /// per entry per message, so the DateTime allocation is hoisted to the caller.
+  bool isOldAt(int nowMs) {
     // old if more than 1 min
-    //return DateTime.now().difference(message.time).inMinutes > 0;
-    return (DateTime.now().millisecondsSinceEpoch - message.time.millisecondsSinceEpoch) * _kMinutesPerMillisecond > 1; // CPU flameshart => optimization
+    return (nowMs - message.time.millisecondsSinceEpoch) * _kMinutesPerMillisecond > 1;
   }
 
   /// Pixel size of the [Marker] used to render this traffic icon.
@@ -125,66 +130,50 @@ class Traffic {
 
 class TrafficCache {
 
-  List<Traffic?> _traffic = [];
+  // Keyed by ICAO. Was a fixed List<Traffic?> scanned linearly on every
+  // message, with a full sort on every new aircraft; both were O(n) or worse
+  // per report and became a thrash cycle once the array saturated.
+  final Map<int, Traffic> _traffic = {};
+  /// Vertical separation in feet beyond which traffic is not retained.
+  /// [Constants.kMaxIntValue] keeps everything.
   late int _kTrafficAltDiffThresholdFt;
-  late int _kTrafficDistanceDiffThresholdNm;
-  late int maxEntries;
 
-  void changeArea(String size) {
-    // puck size S, M, L
-    maxEntries =                        size == "S" ? 20    : (size == "M" ? 200   : 1000);
-    _kTrafficAltDiffThresholdFt =       size == "S" ? 3000  : (size == "M" ? 6000  : 30000);
-    _kTrafficDistanceDiffThresholdNm =  size == "S" ? 10    : (size == "M" ? 50    : 500);
-    List<Traffic?> t = List.filled(maxEntries + 1, null);
-    if(t.length < _traffic.length) {
-      // shrink
-      for(int i = 0; i < t.length; i++) {
-        t[i] = _traffic[i];
-      }
-    } else {
-      // expand
-      for(int i = 0; i < _traffic.length; i++) {
-        t[i] = _traffic[i];
-      }
-    }
-    _traffic = t;
+  /// Selectable vertical filters, shown in the map's layer panel. A value of 0
+  /// applies no filtering, which is the default.
+  static const List<(String, int)> altitudeFilters = [
+    ("All", 0),
+    ("3,000 ft", 3000),
+    ("6,000 ft", 6000),
+    ("10,000 ft", 10000),
+  ];
+
+  /// Keep traffic within [feet] of ownship altitude; 0 keeps everything.
+  void setAltitudeFilter(int feet) {
+    _kTrafficAltDiffThresholdFt = feet <= 0 ? Constants.kMaxIntValue : feet;
   }
 
-  TrafficCache(String size) {
-    changeArea(size);
+  /// True when ownship position can serve as a filter reference. With no GPS
+  /// fix Storage().position is (0, 0) at zero altitude, which would place every
+  /// aircraft thousands of nm away and filter all of it out -- so the range and
+  /// altitude gates are skipped entirely and received traffic is shown as-is.
+  /// Audible alerting is unaffected: it already returns early without a valid
+  /// ownship position, ground speed, or airborne state.
+  static bool get _hasOwnshipReference =>
+      !Gps.isPositionCloseToZero(Storage().position);
+
+  /// Rank used both for eviction and for ordering audible alerts: 3d distance,
+  /// treating 1 nm of horizontal separation as 500 ft of vertical (C182 at
+  /// 120 kts, 1000 fpm). Higher is further away.
+  static double _score(Traffic t) =>
+      t.horizontalOwnshipDistanceNmi * 500 + t.verticalOwnshipDistanceFt.abs();
+
+  TrafficCache(int altitudeFilterFt) {
+    setAltitudeFilter(altitudeFilterFt);
   }
 
   static final bool ac20_172Mode = true;
   bool _audibleAlertsRequested = false;
   bool _audibleAlertsHandling = false;
-
-  static String adjustPuck(String input) {
-    String output = "S";
-    switch (input) {
-      case "S":
-        output = "M";
-        break;
-      case "M":
-        output = "L";
-        break;
-      case "L":
-        output = "S";
-        break;
-    }
-    return output;
-  }
-
-  // Moving the raw calculation into constructor of Traffic, and the vertical distance heuristic into the sort method
-  // where it is used
-  // double findDistance(LatLng coordinate, double altitude) {
-  //   // find 3d distance between current position and airplane
-  //   // treat 1 mile of horizontal distance as 500 feet of vertical distance (C182 120kts, 1000 fpm)
-  //   LatLng current = Gps.toLatLng(Storage().position);
-  //   double horizontalDistance = GeoCalculations().calculateDistance(current, coordinate) * 500;
-  //   double verticalDistance   = (Storage().position.altitude * 3.28084 - altitude).abs();
-  //   double fac = horizontalDistance + verticalDistance;
-  //   return fac;
-  // }
 
   void putTraffic(TrafficReportMessage message) {
 
@@ -203,81 +192,37 @@ class TrafficCache {
       return;
     }
 
-    for(int i = 0; i < _traffic.length; i++) {
-      if(_traffic[i] == null) {
-        continue;
-      }
-      if(_traffic[i]?.isOld() ?? false) {
-        _traffic[i] = null;
-        // purge old
-        continue;
-      }
-
-      // update
-      if(_traffic[i]?.message.icao == message.icao) {
-        // call sign not available. use last one
-        if(message.callSign.isEmpty) {
-          message.callSign = _traffic[i]?.message.callSign ?? "";
-        }
-        final Traffic trafficNew = Traffic(message);
-        // only display/alert traffic that isn't too far from ownship
-        if (trafficNew.verticalOwnshipDistanceFt.abs() > _kTrafficAltDiffThresholdFt ||
-          trafficNew.horizontalOwnshipDistanceNmi > _kTrafficDistanceDiffThresholdNm) {
-           _traffic[i] = null;
-           message.filter = TrafficFilter.range;
-          return;
-        }
-
-        _traffic[i] = trafficNew;
-
-        // process any audible alerts from traffic (if enabled)
-        handleAudibleAlerts();
-
-        return;
-      }
+    // Call sign is not always present; keep the last one we saw for this ICAO.
+    if(message.callSign.isEmpty) {
+      message.callSign = _traffic[icao]?.message.callSign ?? "";
     }
 
-    // put it in the end
     final Traffic trafficNew = Traffic(message);
-    // only display/alert traffic that isn't too far from ownship
-    if (trafficNew.verticalOwnshipDistanceFt.abs() > _kTrafficAltDiffThresholdFt ||
-      trafficNew.horizontalOwnshipDistanceNmi > _kTrafficDistanceDiffThresholdNm) {
+    // only display/alert traffic that isn't too far from ownship -- but only
+    // when we actually have an ownship position to measure against
+    if (_hasOwnshipReference &&
+        trafficNew.verticalOwnshipDistanceFt.abs() > _kTrafficAltDiffThresholdFt) {
+      _traffic.remove(icao); // drop any report previously held for this aircraft
       message.filter = TrafficFilter.range;
       return;
-    }    
-    _traffic[maxEntries] = trafficNew;
+    }
 
-    // sort
-    _traffic.sort(_trafficSort);
+    _traffic[icao] = trafficNew;
+
+    // No entry cap: stale reports are retired by age in getTraffic() and in the
+    // 1 Hz sweep, which bounds the map to aircraft heard in the last minute.
 
     // process any audible alerts from traffic (if enabled)
     handleAudibleAlerts();
-
   }
 
-  int _trafficSort(Traffic? left, Traffic? right) {
-    if(null == left && null != right) {
-      return 1;
-    }
-    if(null != left && null == right) {
-      return -1;
-    }
-    if(null == left && null == right) {
-      return 0;
-    }
-    if(null != left && null != right) {
-      // Use 3d distance between current position and airplane
-      // treat 1 mile of horizontal distance as 500 feet of vertical distance (C182 120kts, 1000 fpm)      
-      double l = left.horizontalOwnshipDistanceNmi * 500 + left.verticalOwnshipDistanceFt.abs();
-      double r = right.horizontalOwnshipDistanceNmi * 500 + right.verticalOwnshipDistanceFt.abs();
-      if(l > r) {
-        return 1;
-      }
-      if(l < r) {
-        return -1;
-      }
-    }
-    return 0;
+  /// Traffic ordered nearest-first. [processTrafficForAudibleAlerts] builds the
+  /// alert queue in iteration order, so this is what makes simultaneous callouts
+  /// speak nearest-first -- previously a side effect of keeping the array sorted.
+  List<Traffic?> _trafficByDistance() {
+    final List<Traffic> list = _traffic.values.toList();
+    list.sort((a, b) => _score(a).compareTo(_score(b)));
+    return list;
   }
 
   void handleAudibleAlerts() {
@@ -291,7 +236,7 @@ class TrafficCache {
       _audibleAlertsHandling = true;   
       TrafficAlerts.getAndStartTrafficAlerts().then((alerts) {
         // TODO: Set all of the "pref" settings from new Storage params (which in turn have a config UI?)
-        alerts?.processTrafficForAudibleAlerts(_traffic, Storage().position, Storage().lastMsGpsSignal, Storage().vSpeed,
+        alerts?.processTrafficForAudibleAlerts(_trafficByDistance(), Storage().position, Storage().lastMsGpsSignal, Storage().vSpeed,
           Storage().airborne);
         _audibleAlertsRequested = false;
         Future.delayed(const Duration(milliseconds: _kAudibleAlertCallMinDelayMs), () {
@@ -310,13 +255,15 @@ class TrafficCache {
   void updateTrafficDistancesAndAlerts() {
     // Make async event to avoid blocking UI thread for recalcs and alerts
     Future(() {
-      for (int i = 0; i < _traffic.length; i++) {
-        _traffic[i]?.updateOwnshipDistancesAndAlertFields();
-        // only display/alert traffic that isn't too far from ownship
-        if ((_traffic[i]?.verticalOwnshipDistanceFt.abs() ?? 0) > _kTrafficAltDiffThresholdFt) {
-          _traffic[i] = null;
-        }        
-      }
+      final int nowMs = DateTime.now().millisecondsSinceEpoch;
+      final bool hasRef = _hasOwnshipReference;
+      _traffic.removeWhere((key, t) {
+        t.updateOwnshipDistancesAndAlertFields();
+        // only display/alert traffic that isn't too far from ownship, and
+        // retire stale reports (the per-message scan used to do this)
+        return t.isOldAt(nowMs) ||
+            (hasRef && t.verticalOwnshipDistanceFt.abs() > _kTrafficAltDiffThresholdFt);
+      });
       // Single 1 Hz UI refresh for all traffic (icons + projection lines),
       // including ownship heading changes that rotate icons in track-up.
       Storage().trafficChange.value++;
@@ -324,18 +271,9 @@ class TrafficCache {
   }
 
   List<Traffic> getTraffic() {
-    List<Traffic> ret = [];
-
-    for(Traffic? check in _traffic) {
-      if(null != check) {
-        if(check.isOld()) {
-          // do not show old
-          continue;
-        }
-        ret.add(check);
-      }
-    }
-    return ret;
+    final int nowMs = DateTime.now().millisecondsSinceEpoch;
+    _traffic.removeWhere((key, t) => t.isOldAt(nowMs));
+    return _traffic.values.toList();
   }
 }
 
@@ -528,6 +466,29 @@ abstract class AbstractCachedCustomPainter extends CustomPainter {
   static final Map<int,ui.Picture> _pictureCache = {};  // Graphical operations cache (for realtime rasterization config, e.g., shadow on)
   static final Map<int,ui.Image> _imageCache = {};      // Rasterized pixel image cache (for non-realtime config, e.g., no shadow off)
 
+  /// These caches were unbounded. TrafficIdPainter keys on callsign and
+  /// TrafficVerticalStatusPainter on flight-level difference, so both grow with
+  /// every distinct aircraft/altitude seen and never shrink -- tens of MB of
+  /// retained ui.Image over a long flight. Bounded FIFO (Dart maps preserve
+  /// insertion order); native handles are released on eviction.
+  static const int _maxCacheEntries = 256;
+
+  static void _cachePicture(int key, ui.Picture picture) {
+    while (_pictureCache.length >= _maxCacheEntries) {
+      final int oldest = _pictureCache.keys.first;
+      _pictureCache.remove(oldest)?.dispose();
+    }
+    _pictureCache[key] = picture;
+  }
+
+  static void _cacheImage(int key, ui.Image image) {
+    while (_imageCache.length >= _maxCacheEntries) {
+      final int oldest = _imageCache.keys.first;
+      _imageCache.remove(oldest)?.dispose();
+    }
+    _imageCache[key] = image;
+  }
+
   /// Unique key of icon state based on flight properties above that define the icon appearance, per the current
   /// configuration of enabled features.  This is used to determine UI-relevant state changes for repainting,
   /// as well as the key to the picture cache  
@@ -569,14 +530,14 @@ abstract class AbstractCachedCustomPainter extends CustomPainter {
 
       // store this fresh image to the cache(s) for quick and efficient rendering next time
       final ui.Picture newPicture = recorder.endRecording();
-      _pictureCache[_uiStateKey] = newPicture;
+      _cachePicture(_uiStateKey, newPicture);
       picture = newPicture;
     } 
     
     // Cache pixels of image to image cache, to save rasterization next time, if possible, and paint image
     if (!_isRealtimeRasterizationRequired) {
       picture.toImage(_maxSize.width.ceil(), _maxSize.height.ceil()).then((newImage) {
-        _imageCache[_uiStateKey] = newImage;
+        _cacheImage(_uiStateKey, newImage);
       });
     }
     canvas.drawPicture(picture);

@@ -1,3 +1,4 @@
+import 'package:avaremp/gdl90/adsb_status.dart';
 import 'dart:typed_data';
 
 import 'package:avaremp/utils/app_log.dart';
@@ -82,9 +83,17 @@ class MessageFactory
     // Traffic reports carry why they were filtered out (not shown on map).
     final TrafficFilter filter =
         m is TrafficReportMessage ? m.filter : TrafficFilter.none;
-    Storage().adsbStatus.logMessage(
-        type, MessageType.describe(type), m?.summary() ?? "", m?.decode() ?? "",
-        _toHex(data), filter: filter);
+    // Counters must still run for every frame, but the decoded/hex strings are
+    // only built when the log will actually keep the entry.
+    final AdsbStatus status = Storage().adsbStatus;
+    final bool willLog = status.willLog(type);
+    status.logMessage(
+        type,
+        willLog ? MessageType.describe(type) : "",
+        willLog ? (m?.summary() ?? "") : "",
+        willLog ? (m?.decode() ?? "") : "",
+        willLog ? _toHex(data) : "",
+        filter: filter);
     return m;
   }
 

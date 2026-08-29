@@ -138,21 +138,24 @@ The **instrument tiles** float as a movable overlay over the map (GS, ALT, MT, P
 - **Rubber banding toggle**: enables dragging route waypoints directly on map. Red when active.
 - **Notes icon**: opens handwriting Notes screen.
 - **Chart type popup**: selects chart source type.
-- **Layers popup**: per-layer on/off via opacity slider.
+- **Layers popup**: per-layer on/off via opacity slider; also holds the Traffic altitude filter.
 
 #### Top-left
 - **Instrument tiles menu** (arrow dropdown): tile sizing, lock/reset layout, and show/hide individual instrument tiles (including the `ADSB` tile).
 
-#### Traffic-only controls (show when Traffic layer > 0)
-- **Traffic puck size** cycles: `S`, `M`, `L`
-  - S: 20 aircraft, 3000 ft, 10 NM
-  - M: 200 aircraft, 6000 ft, 50 NM
-  - L: 1000 aircraft, 30000 ft, 500 NM
+#### Traffic altitude filter (in the Layers popup)
+With the **Traffic** layer on, an **Altitude** row appears beneath it in the Layers popup:
+- **All** (default) — every aircraft the receiver reports is shown, regardless of vertical separation.
+- **3,000 ft** / **6,000 ft** / **10,000 ft** — hide traffic more than that far above or below your altitude.
+
+Traffic is shown even without a GPS fix; the altitude filter is applied only when
+ownship position is known. There is no limit on range or on the number of aircraft
+tracked.
 
 #### Altitude slider (right side)
 - Appears with the **Weather** layer when the product menu is set to Cloud tops, Icing, Turbulence, Ceiling, or Wind vectors.
 - Range: 0 to 30,000 ft (1,000 ft increments).
-- Product menu: with the **Weather** layer on, tap the cloud button on the right (above the traffic **S/M/L** control, below the altitude slider when shown) to open per-product opacity controls (same pattern as map layers). Enable any combination of **ADS-B Radar**, **ADS-B Cloud Tops**, **ADS-B Icing**, **ADS-B Turbulence**, **ADS-B Lightning**, **Radar**, **Ceiling**, and **Wind Vectors**. ADS-B items show an antenna icon; Radar, Ceiling, and Wind Vectors show an internet/radar icon. **Radar** is internet Mesonet radar animation.
+- Product menu: with the **Weather** layer on, tap the cloud button on the right (below the altitude slider when shown) to open per-product opacity controls (same pattern as map layers). Enable any combination of **ADS-B Radar**, **ADS-B Cloud Tops**, **ADS-B Icing**, **ADS-B Turbulence**, **ADS-B Lightning**, **Radar**, **Ceiling**, and **Wind Vectors**. ADS-B items show an antenna icon; Radar, Ceiling, and Wind Vectors show an internet/radar icon. **Radar** is internet Mesonet radar animation.
 
 ### 4.4 Map chart types
 
@@ -242,7 +245,7 @@ Interactions:
     - **SIGMET / AIRMET / SUA**: location, polygon vertex count, effective times, and any embedded text.
   - **Device report**: battery charge percentage and charging state.
 
-  Each message type has its own **color**, so you can tell types apart at a glance. The same colors are used in the **filter** list (funnel icon) next to each message type, so the log and the filter selector stay in sync. When a traffic target is suppressed, the row also carries a text tag — `filtered: ownship` (its ID matched yours, so it was treated as "us") or `filtered: out of range` (outside the current S/M/L traffic distance/altitude window). This makes it easy to confirm whether a nearby aircraft (for example one received via **TIS-B**) is being received but suppressed rather than never received at all.
+  Each message type has its own **color**, so you can tell types apart at a glance. The same colors are used in the **filter** list (funnel icon) next to each message type, so the log and the filter selector stay in sync. When a traffic target is suppressed, the row also carries a text tag — `filtered: ownship` (its ID matched yours, so it was treated as "us") or `filtered: altitude` (outside the current traffic altitude filter). This makes it easy to confirm whether a nearby aircraft (for example one received via **TIS-B**) is being received but suppressed rather than never received at all.
 
   Use **Pause**/**Resume** to freeze or continue the live log. Leaving the screen automatically pauses the log (it resumes when you reopen the screen).
 
