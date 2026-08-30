@@ -106,18 +106,28 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
     );
   }
 
-  /// A source-mode selector. Tapping cycles it; the subtitle says what the
-  /// current choice actually does, so the effect of the tap is never inferred.
-  Widget _modeTile(String title, String value, String description, VoidCallback onTap) {
-    return Card(
-      child: ListTile(
-        dense: true,
-        leading: const Icon(Icons.tune, color: Colors.grey),
-        title: Text(title),
-        trailing: Text(value, style: const TextStyle(fontWeight: FontWeight.bold)),
-        subtitle: Text("$description\nTap to change."),
-        isThreeLine: true,
-        onTap: onTap,
+  /// A source selector with every option visible and directly selectable. This
+  /// replaced a tile that cycled through the modes and needed a paragraph to
+  /// say what the next tap would do; showing the choices says it instead.
+  Widget _modeSelector(List<String> modes, String selected,
+      String Function(String) name, void Function(String) onSelect) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 2, 12, 6),
+      child: SizedBox(
+        width: double.infinity,
+        child: SegmentedButton<String>(
+          showSelectedIcon: false,
+          style: const ButtonStyle(
+            visualDensity: VisualDensity.compact,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          segments: [
+            for (final String m in modes)
+              ButtonSegment<String>(value: m, label: Text(name(m))),
+          ],
+          selected: {selected},
+          onSelectionChanged: (s) => setState(() => onSelect(s.first)),
+        ),
       ),
     );
   }
@@ -390,13 +400,12 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
                       : (!s.gpsValid ? Colors.amber : Colors.green);
                   return Column(
                     children: [
-                      _sectionHeader("POSITION",
-                          "which source is driving the aircraft symbol"),
-                      _modeTile(
-                        "Position source",
-                        Storage().positionSourceLabel,
-                        Storage().gpsSourceModeDescription,
-                        () => setState(() => Storage().cycleGpsSourceMode()),
+                      _sectionHeader("POSITION", "driving the aircraft symbol"),
+                      _modeSelector(
+                        Storage.gpsSourceModes,
+                        Storage().gpsSourceMode,
+                        Storage.gpsSourceModeName,
+                        (m) => Storage().selectGpsSourceMode(m),
                       ),
                       // Every candidate, each describing only itself, with the
                       // selected one marked. The same hardware used to be
@@ -427,21 +436,25 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
                                 ? "No position"
                                 : "${Storage().position.latitude.toStringAsFixed(4)}, "
                                   "${Storage().position.longitude.toStringAsFixed(4)}"
-                                  "    ${(Storage().position.altitude * Storage().units.mToF).round()} ft",
+                                  "   ${(Storage().position.altitude * Storage().units.mToF).round()} ft",
                             style: const TextStyle(fontWeight: FontWeight.bold),
                           ),
-                          subtitle: Text(Storage().positionProvenanceMessage),
-                          isThreeLine: true,
+                          trailing: Text(Storage().positionProvenanceShort,
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  color: Storage().positionIsLive
+                                      ? Colors.green
+                                      : (Storage().positionIsFrozen
+                                          ? Colors.amber : Colors.grey))),
                         ),
                       ),
 
-                      _sectionHeader("TRAFFIC",
-                          "where the targets on the map come from"),
-                      _modeTile(
-                        "Traffic source",
-                        Storage().trafficSourceLabel,
-                        Storage().trafficSourceModeDescription,
-                        () => setState(() => Storage().cycleTrafficSourceMode()),
+                      _sectionHeader("TRAFFIC", "targets on the map"),
+                      _modeSelector(
+                        Storage.trafficSourceModes,
+                        Storage().trafficSourceMode,
+                        Storage.trafficSourceModeName,
+                        (m) => Storage().selectTrafficSourceMode(m),
                       ),
                       _candidateTile(Icons.settings_input_antenna, "ADS-B receiver",
                           Storage().receiverTrafficHealth,
@@ -456,12 +469,7 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
                           child: ListTile(
                             dense: true,
                             leading: const Icon(Icons.badge_outlined, color: Colors.orange),
-                            title: const Text("Fly as (tail number)"),
-                            subtitle: const Text(
-                                "Adopt this aircraft from the feed as ownship. Leave "
-                                "blank for traffic only. Test data -- seconds of "
-                                "latency and coverage gaps; not for navigation."),
-                            isThreeLine: true,
+                            title: const Text("Fly as"),
                             trailing: SizedBox(
                               width: 110,
                               child: TextField(
@@ -484,7 +492,7 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
                           ),
                         ),
 
-                      _sectionHeader("RECEIVER", "the ADS-B hardware's own link"),
+                      _sectionHeader("RECEIVER", "link health"),
                       _statusTile(
                         Icons.settings_input_antenna,
                         "Connection",
@@ -561,11 +569,12 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
                     // list). Any traffic filtering is noted as a text tag.
                     final Color accent = _typeColor(m.typeId);
                     final Color tileColor = accent.withValues(alpha: 0.14);
-                    final String? filterTag = m.filter == TrafficFilter.ownship
-                        ? "filtered: ownship"
-                        : (m.filter == TrafficFilter.range
-                            ? "filtered: altitude"
-                            : null);
+                    final String? filterTag = switch (m.filter) {
+                      TrafficFilter.ownship   => "filtered: ownship",
+                      TrafficFilter.range     => "filtered: altitude",
+                      TrafficFilter.duplicate => "filtered: duplicate",
+                      TrafficFilter.none      => null,
+                    };
                     final String titleText = [
                       m.type,
                       if (m.summary.isNotEmpty) m.summary,

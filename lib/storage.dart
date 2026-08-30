@@ -308,18 +308,44 @@ class Storage {
     NetworkTraffic().lastOwnshipAgeS = -1;
   }
 
-  void cycleGpsSourceMode() {
-    int index = (_gpsSourceModes.indexOf(gpsSourceMode) + 1) % _gpsSourceModes.length;
-    gpsSourceMode = _gpsSourceModes[index];
-    settings.setGpsSourceMode(gpsSourceMode);
+  static List<String> get gpsSourceModes => _gpsSourceModes;
+  static List<String> get trafficSourceModes => _trafficSourceModes;
+
+  void selectGpsSourceMode(String mode) {
+    if (!_gpsSourceModes.contains(mode) || mode == gpsSourceMode) {
+      return;
+    }
+    gpsSourceMode = mode;
+    settings.setGpsSourceMode(mode);
     applySourceModes();
   }
 
-  void cycleTrafficSourceMode() {
-    int index = (_trafficSourceModes.indexOf(trafficSourceMode) + 1) % _trafficSourceModes.length;
-    trafficSourceMode = _trafficSourceModes[index];
-    settings.setTrafficSourceMode(trafficSourceMode);
+  void selectTrafficSourceMode(String mode) {
+    if (!_trafficSourceModes.contains(mode) || mode == trafficSourceMode) {
+      return;
+    }
+    trafficSourceMode = mode;
+    settings.setTrafficSourceMode(mode);
     applySourceModes();
+  }
+
+  /// One or two words naming a mode, for a selector where all the options are
+  /// on screen together and the words have to line up in a row.
+  static String gpsSourceModeName(String mode) {
+    switch (mode) {
+      case "Internal": return "Device";
+      case "External": return "Receiver";
+      case "Network":  return "Feed";
+      default:         return "Auto";
+    }
+  }
+
+  static String trafficSourceModeName(String mode) {
+    switch (mode) {
+      case "Internet": return "Web";
+      case "Both":     return "Both";
+      default:         return "Receiver";
+    }
   }
 
   bool isRollReversed = false;
@@ -451,6 +477,16 @@ class Storage {
 
   /// How long ago, in words. Used wherever an age is reported so they all read
   /// the same way.
+  /// The same age with the trailing "ago" dropped, for a status column where
+  /// the heading already supplies the context.
+  static String describeAgeShort(int ms) {
+    final int s = ms ~/ 1000;
+    if (s < 2)    return "now";
+    if (s < 90)   return "$s s";
+    if (s < 5400) return "${(s / 60).round()} min";
+    return "${(s / 3600).round()} h";
+  }
+
   static String describeAge(int ms) {
     final int s = ms ~/ 1000;
     if (s < 2)    return "just now";
@@ -510,103 +546,97 @@ class Storage {
     return usesReceiverTraffic && adsbStatus.connected ? "Quiet" : "None";
   }
 
+  /// Which source put the current position on screen, in one word.
+  String get positionOriginShort {
+    switch (_positionOrigin) {
+      case PositionOrigin.none:     return "none";
+      case PositionOrigin.internal: return "device";
+      case PositionOrigin.external: return "receiver";
+      case PositionOrigin.network:
+        return _positionOriginDetail.isEmpty ? "feed" : _positionOriginDetail;
+    }
+  }
+
+  /// Provenance for a status column: which source, how old, and whether it has
+  /// stopped. Three words at most -- the colour carries the severity.
+  String get positionProvenanceShort {
+    if (_positionOrigin == PositionOrigin.none ||
+        Gps.isPositionCloseToZero(position)) {
+      return "none";
+    }
+    final String age =
+        describeAgeShort(DateTime.now().millisecondsSinceEpoch - _positionOriginMs);
+    return positionIsLive
+        ? "$positionOriginShort $age"
+        : "frozen $positionOriginShort $age";
+  }
+
   // ---------------------------------------------------------------------------
-  // Per-candidate health. Each source describes itself once; the diagnostics
-  // screen lists them all and marks the selected one, so no two rows can give
-  // conflicting accounts of the same hardware.
+  // Per-candidate health. Each source describes itself once, in the fewest
+  // words that are still unambiguous; the diagnostics screen lists them all and
+  // marks the selected one, so no two rows can give conflicting accounts of the
+  // same hardware. The colour says how bad it is, so the words never have to.
   // ---------------------------------------------------------------------------
 
   /// This device's own location provider, whether or not it is selected.
   (String, SourceHealth) get deviceGpsHealth {
-    if (gpsNoProvider)   return ("no location provider on this computer", SourceHealth.absent);
-    if (gpsNotPermitted) return ("location access denied", SourceHealth.failed);
-    if (gpsDisabled)     return ("location services turned off", SourceHealth.failed);
+    if (gpsNoProvider)   return ("none fitted", SourceHealth.absent);
+    if (gpsNotPermitted) return ("denied", SourceHealth.failed);
+    if (gpsDisabled)     return ("switched off", SourceHealth.failed);
     if (!acceptsPositionFrom(PositionOrigin.internal)) {
-      return ("present, not selected", SourceHealth.idle);
+      return ("standby", SourceHealth.idle);
     }
     if (_positionOrigin == PositionOrigin.internal && positionIsLive) {
       return ("fix", SourceHealth.ok);
     }
-    return ("no fix yet", SourceHealth.degraded);
+    return ("no fix", SourceHealth.degraded);
   }
 
   /// The receiver's own GPS, as a position candidate. Its link health is a
   /// separate question, reported under the receiver section.
   (String, SourceHealth) get receiverPositionHealth {
-    if (!adsbStatus.connected) return ("no data from receiver", SourceHealth.absent);
+    if (!adsbStatus.connected) return ("no link", SourceHealth.absent);
     if (adsbStatus.typeCount(0x0A) == 0) {
-      return ("connected, no ownship report", SourceHealth.degraded);
+      return ("no ownship", SourceHealth.degraded);
     }
     if (!adsbStatus.ownshipFresh) {
-      return ("ownship report ${describeAge(adsbStatus.secondsSinceOwnship * 1000)}",
+      return ("stale ${describeAgeShort(adsbStatus.secondsSinceOwnship * 1000)}",
           SourceHealth.degraded);
     }
     final String tail = ownshipMessageCallsign.trim();
-    return ("fix${tail.isEmpty ? "" : ", $tail"}, ${adsbStatus.secondsSinceOwnship} s ago",
+    return ("${tail.isEmpty ? "fix" : tail} ${adsbStatus.secondsSinceOwnship} s",
         SourceHealth.ok);
   }
 
   /// The internet feed, as a position candidate.
   (String, SourceHealth) get feedPositionHealth {
-    if (!NetworkTraffic().running) return ("not running", SourceHealth.idle);
-    if (!NetworkTraffic().healthy) {
-      return ("unreachable: ${NetworkTraffic().lastError ?? "no response"}",
-          SourceHealth.failed);
-    }
+    if (!NetworkTraffic().running) return ("off", SourceHealth.idle);
+    if (!NetworkTraffic().healthy) return ("unreachable", SourceHealth.failed);
     final String tail = settings.getNetworkOwnshipTail().trim().toUpperCase();
-    if (tail.isEmpty) return ("no aircraft adopted", SourceHealth.degraded);
+    if (tail.isEmpty) return ("no tail set", SourceHealth.degraded);
     if (_positionOrigin == PositionOrigin.network && positionIsLive) {
-      return ("flying as $tail", SourceHealth.ok);
+      return ("as $tail", SourceHealth.ok);
     }
-    return ("$tail not currently in the feed", SourceHealth.degraded);
+    return ("$tail not seen", SourceHealth.degraded);
   }
 
   /// The receiver, as a traffic candidate.
   (String, SourceHealth) get receiverTrafficHealth {
-    if (!usesReceiverTraffic)  return ("not selected", SourceHealth.idle);
-    if (!adsbStatus.connected) return ("no data from receiver", SourceHealth.absent);
+    if (!usesReceiverTraffic)  return ("standby", SourceHealth.idle);
+    if (!adsbStatus.connected) return ("no link", SourceHealth.absent);
     if (adsbStatus.trafficMessageCount == 0) {
-      return ("connected, no targets heard", SourceHealth.degraded);
+      return ("no targets", SourceHealth.degraded);
     }
-    return ("${adsbStatus.trafficMessageCount} reports, ${adsbStatus.secondsSinceTraffic} s ago",
+    return ("${adsbStatus.trafficMessageCount} msgs ${adsbStatus.secondsSinceTraffic} s",
         adsbStatus.trafficFresh ? SourceHealth.ok : SourceHealth.degraded);
   }
 
   /// The internet feed, as a traffic candidate.
   (String, SourceHealth) get feedTrafficHealth {
-    if (!usesNetworkTraffic)       return ("not selected", SourceHealth.idle);
-    if (!NetworkTraffic().running) return ("not running", SourceHealth.idle);
-    if (!NetworkTraffic().healthy) {
-      return ("unreachable: ${NetworkTraffic().lastError ?? "no response"}",
-          SourceHealth.failed);
-    }
-    return ("${NetworkTraffic().lastAircraftCount} aircraft in range", SourceHealth.ok);
-  }
-
-  /// What each position source mode does, in plain language.
-  String get gpsSourceModeDescription {
-    switch (gpsSourceMode) {
-      case "Internal":
-        return "Use only this device's own GPS. The ADS-B receiver's position is ignored.";
-      case "External":
-        return "Use only the ADS-B receiver's position. This device's own GPS is ignored.";
-      case "Network":
-        return "Test only. Position is synthesised from an internet feed by adopting a tail number, with seconds of latency. Not for navigation.";
-      default:
-        return "Use the ADS-B receiver's position when it has one, otherwise fall back to this device's GPS.";
-    }
-  }
-
-  /// What each traffic source mode does, in plain language.
-  String get trafficSourceModeDescription {
-    switch (trafficSourceMode) {
-      case "Internet":
-        return "Show only targets from the internet feed. Wide coverage, but seconds late and dependent on this device having internet.";
-      case "Both":
-        return "Show the receiver's targets, and fill the gaps with the internet feed. Where both report the same aircraft the receiver wins; feed-only targets are drawn hollow.";
-      default:
-        return "Show only what the ADS-B receiver hears. This is the real-time picture.";
-    }
+    if (!usesNetworkTraffic)       return ("standby", SourceHealth.idle);
+    if (!NetworkTraffic().running) return ("off", SourceHealth.idle);
+    if (!NetworkTraffic().healthy) return ("unreachable", SourceHealth.failed);
+    return ("${NetworkTraffic().lastAircraftCount} aircraft", SourceHealth.ok);
   }
 
   /// True when position acquisition is in a state the pilot should know about.
