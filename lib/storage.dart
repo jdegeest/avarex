@@ -459,22 +459,21 @@ class Storage {
     return "${(s / 3600).round()} h ago";
   }
 
-  /// The one sentence about position provenance. Every surface quotes this, so
-  /// none of them can word it differently or get it wrong on its own.
+  /// The one line about position provenance, quoted everywhere rather than
+  /// reworded, so no two surfaces can describe it differently. Kept to a single
+  /// short clause: the aircraft symbol already shows staleness by going grey,
+  /// so this only has to name the source and its age.
   String get positionProvenanceMessage {
+    final String age =
+        describeAge(DateTime.now().millisecondsSinceEpoch - _positionOriginMs);
     if (positionIsLive) {
-      return "Position from $positionOriginLabel, "
-          "${describeAge(DateTime.now().millisecondsSinceEpoch - _positionOriginMs)}.";
+      return "From $positionOriginLabel, $age.";
     }
     if (_positionOrigin == PositionOrigin.none ||
         Gps.isPositionCloseToZero(position)) {
-      return "No position yet. $positionSourceLabel is selected but has not "
-          "supplied one.";
+      return "Nothing from $positionSourceLabel yet.";
     }
-    return "FROZEN -- this is the last position from $positionOriginLabel, "
-        "${describeAge(DateTime.now().millisecondsSinceEpoch - _positionOriginMs)}. "
-        "$positionSourceLabel is not supplying one, so the aircraft symbol is "
-        "not moving.";
+    return "Frozen -- last from $positionOriginLabel, $age.";
   }
 
   /// Short word for the instrument tile: what is driving the aircraft symbol.
