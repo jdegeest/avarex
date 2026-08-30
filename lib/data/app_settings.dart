@@ -123,6 +123,16 @@ class AppSettings {
     return provider.getValue(portrait ? "key-instrument-positions-portrait" : "key-instrument-positions-landscape", defaultValue: "") as String;
   }
 
+  /// Tail number to adopt as ownship when the position source is Network.
+  /// Blank means the feed supplies traffic only.
+  String getNetworkOwnshipTail() {
+    return provider.getValue("key-network-ownship-tail", defaultValue: "") as String;
+  }
+
+  void setNetworkOwnshipTail(String value) {
+    provider.setString("key-network-ownship-tail", value);
+  }
+
   void setGpsSourceMode(String mode) {
     provider.setString("key-gps-source-mode", mode);
   }

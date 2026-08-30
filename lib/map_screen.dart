@@ -1442,6 +1442,55 @@ class MapScreenState extends State<MapScreen> {
                   }
                 ),
               const Positioned.fill(child: RepaintBoundary(child: InstrumentList())),
+              // Unmissable while position and traffic come from an internet
+              // feed: that data is seconds old with coverage gaps, and must
+              // never be mistaken for a receiver.
+              // The source can change from another screen, which does not rebuild
+              // this one, so the mode test lives inside the builder and is
+              // re-evaluated on the clock rather than only at map build time.
+              Positioned(
+                  top: 2,
+                  left: 0,
+                  right: 0,
+                  child: IgnorePointer(
+                    child: Align(
+                      alignment: Alignment.topCenter,
+                      child: ValueListenableBuilder<int>(
+                        valueListenable: Storage().timeChange,
+                        builder: (context, _, __) {
+                          if (!Storage().isNetworkSource) {
+                            return const SizedBox.shrink();
+                          }
+                          final GpsState state = Storage().gpsState;
+                          final bool live = state != GpsState.networkNoData;
+                          return Container(
+                            decoration: BoxDecoration(
+                              color: (live ? Colors.orange.shade800 : Colors.red.shade800)
+                                  .withValues(alpha: 0.92),
+                              borderRadius: const BorderRadius.all(Radius.circular(3)),
+                            ),
+                            padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 7),
+                            child: Text(
+                              switch (state) {
+                                GpsState.networkFix =>
+                                  "TEST DATA \u2014 INTERNET FEED",
+                                GpsState.networkNoOwnship =>
+                                  "TEST DATA \u2014 TRAFFIC ONLY",
+                                _ => "TEST DATA \u2014 FEED UNREACHABLE",
+                              },
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 0.5,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                ),
               // warn
               Positioned(
                 child: Align(

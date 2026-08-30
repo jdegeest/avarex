@@ -21,6 +21,27 @@ enum GpsState {
   externalFix,
   externalNoOwnship,
   externalNoData,
+  /// Position synthesised from an internet feed by adopting a tail number.
+  /// Test data, never a navigation source.
+  networkFix,
+  /// The feed is answering, but no tail number has been adopted -- either none
+  /// was entered or that aircraft is not currently in the feed. Traffic works;
+  /// there is simply no ownship.
+  networkNoOwnship,
+  networkNoData,
+}
+
+/// Where the position currently in use actually came from, as opposed to where
+/// the user asked it to come from. The two can disagree for a second after a
+/// source change, and they used to disagree indefinitely: a receiver that got
+/// its fix while the app sat in Network mode kept pushing its own position in,
+/// while every label still named the tail number we thought we were spoofing.
+enum PositionOrigin {
+  /// Nothing has supplied a position since the last source change.
+  none,
+  internal,
+  external,
+  network,
 }
 
 class Gps {

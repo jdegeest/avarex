@@ -2,7 +2,8 @@ import 'package:avaremp/gdl90/adsb_status.dart';
 import 'package:avaremp/gdl90/ground_station_cache.dart';
 import 'package:avaremp/gdl90/stratus_open_mode.dart';
 import 'package:avaremp/gdl90/traffic_report_message.dart';
-import 'package:avaremp/io/gps.dart' show GpsState;
+import 'package:avaremp/io/gps.dart';
+import 'package:avaremp/io/network_traffic.dart';
 import 'package:avaremp/storage.dart';
 import 'package:avaremp/utils/geo_calculations.dart';
 import 'package:avaremp/utils/toast.dart';
@@ -25,6 +26,8 @@ class AdsbStatusScreen extends StatefulWidget {
 class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
 
   final ScrollController _scroll = ScrollController();
+  late final TextEditingController _tailController =
+      TextEditingController(text: Storage().settings.getNetworkOwnshipTail());
 
   @override
   void initState() {
@@ -53,6 +56,7 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
     // Leaving the screen pauses the message log so it stops scrolling/updating.
     Storage().adsbStatus.logPaused = true;
     _scroll.dispose();
+    _tailController.dispose();
     super.dispose();
   }
 
@@ -63,6 +67,24 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
         leading: Icon(icon, color: color),
         title: Text(title),
         trailing: Text(value, style: const TextStyle(fontWeight: FontWeight.bold)),
+      ),
+    );
+  }
+
+  /// A group heading. The three GPS-ish rows read as duplicates without one:
+  /// "position in use" is about us, "receiver's own GPS fix" is about the
+  /// hardware, and "this device's GPS" is about the tablet.
+  Widget _sectionHeader(String title, String subtitle) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: const TextStyle(
+              fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 1.1)),
+          Text(subtitle, style: TextStyle(
+              fontSize: 11, color: Theme.of(context).colorScheme.outline)),
+        ],
       ),
     );
   }
@@ -318,16 +340,10 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
                       : (!s.gpsValid ? Colors.amber : Colors.green);
                   return Column(
                     children: [
-                      _statusTile(
-                        Icons.settings_input_antenna,
-                        "Receiver",
-                        s.connected ? "Connected" : "Disconnected",
-                        connColor,
-                      ),
-                      _boolTile(Icons.gps_fixed, "GPS position valid", s.gpsValid),
+                      _sectionHeader("POSITION", "where your own position comes from"),
                       // Where position is actually coming from, and why not, if
-                      // not. "GPS position valid" above is only about the
-                      // receiver's own fix; this covers the whole chain.
+                      // not. This covers the whole chain; the receiver's own fix
+                      // is reported separately under RECEIVER below.
                       ListTile(
                         dense: true,
                         leading: Icon(Icons.my_location, color: switch (Storage().gpsState) {
@@ -338,7 +354,7 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
                           GpsState.noProvider => Colors.grey,
                           _ => Colors.amber,
                         }),
-                        title: const Text("Position source"),
+                        title: const Text("Position in use"),
                         trailing: Text(Storage().gpsStateLabel,
                             style: const TextStyle(fontWeight: FontWeight.bold)),
                         subtitle: Text(Storage().gpsStateMessage),
@@ -357,9 +373,95 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
                         isThreeLine: true,
                         onTap: () => setState(() => Storage().cycleGpsSourceMode()),
                       ),
+                      // Network source: which aircraft in the feed to fly as.
+                      if (Storage().isNetworkSource)
+                        ListTile(
+                          dense: true,
+                          leading: const Icon(Icons.badge_outlined, color: Colors.orange),
+                          title: const Text("Fly as (tail number)"),
+                          subtitle: const Text(
+                              "Adopt this aircraft from the internet feed as ownship. "
+                              "Leave blank for traffic only. Test data -- seconds of "
+                              "latency and coverage gaps; not for navigation."),
+                          isThreeLine: true,
+                          trailing: SizedBox(
+                            width: 110,
+                            child: TextField(
+                              controller: _tailController,
+                              textCapitalization: TextCapitalization.characters,
+                              decoration: const InputDecoration(
+                                hintText: "N719CG",
+                                isDense: true,
+                              ),
+                              onChanged: (v) {
+                                Storage().settings
+                                    .setNetworkOwnshipTail(v.trim().toUpperCase());
+                                // Drop the old aircraft immediately rather than
+                                // letting its last position sit there wearing
+                                // the new tail number.
+                                Storage().clearNetworkOwnship();
+                              },
+                            ),
+                          ),
+                        ),
+                      if (Storage().isNetworkSource)
+                        _statusTile(
+                          Icons.cloud_download_outlined,
+                          "Feed",
+                          !NetworkTraffic().running
+                              ? "stopped"
+                              : NetworkTraffic().healthy
+                                  ? "${NetworkTraffic().lastAircraftCount} aircraft"
+                                      "${NetworkTraffic().consecutiveFailures > 0 ? ", ${NetworkTraffic().consecutiveFailures} retrying" : ""}"
+                                  : "unreachable: ${NetworkTraffic().lastError ?? "no response"}",
+                          !NetworkTraffic().running
+                              ? Colors.grey
+                              : NetworkTraffic().healthy
+                                  ? Colors.orange
+                                  : Colors.red,
+                        ),
                       // Colour by whether the stream is still live, not by
                       // whether anything ever arrived -- a count from minutes
                       // ago is not a healthy receiver.
+                      // The device's own GPS, reported separately from the
+                      // receiver: this screen is where you come to find out why
+                      // you have no position, and "is there a GPS in this thing"
+                      // is the first question.
+                      _statusTile(
+                        Icons.satellite_alt,
+                        "This device's GPS",  // as opposed to the receiver's, above
+                        Storage().gpsNoProvider
+                            ? "not present"
+                            : (Storage().gpsNotPermitted
+                                ? "access denied"
+                                : (Storage().gpsDisabled
+                                    ? "services off"
+                                    : (Storage().gpsNoLock ? "present, no fix" : "present, fix"))),
+                        Storage().gpsNoProvider
+                            ? Colors.grey
+                            : (Storage().gpsNotPermitted || Storage().gpsDisabled
+                                ? Colors.red
+                                : (Storage().gpsNoLock ? Colors.amber : Colors.green)),
+                      ),
+                      _statusTile(
+                        Icons.place_outlined,
+                        "Current position",
+                        Gps.isPositionCloseToZero(Storage().position)
+                            ? "none"
+                            : "${Storage().position.latitude.toStringAsFixed(4)}, "
+                              "${Storage().position.longitude.toStringAsFixed(4)}  "
+                              "${(Storage().position.altitude * Storage().units.mToF).round()} ft",
+                        Gps.isPositionCloseToZero(Storage().position)
+                            ? Colors.grey : Colors.green,
+                      ),
+                      _sectionHeader("RECEIVER", "what the ADS-B hardware is doing"),
+                      _statusTile(
+                        Icons.settings_input_antenna,
+                        "Connection",
+                        s.connected ? "Connected" : "Disconnected",
+                        connColor,
+                      ),
+                      _boolTile(Icons.gps_fixed, "Receiver's own GPS fix", s.gpsValid),
                       _statusTile(
                         Icons.flight,
                         "Ownship reports",

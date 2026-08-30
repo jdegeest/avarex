@@ -77,6 +77,9 @@ class WarningsWidgetState extends State<WarningsWidget> {
         GpsState.internalSearching:       ("GPS has no fix yet", Icons.gps_not_fixed),
         GpsState.externalNoOwnship:       ("Receiver has no GPS fix", Icons.satellite_alt),
         GpsState.externalNoData:          ("No receiver data", Icons.wifi_off),
+        GpsState.networkFix:              ("Position is test data", Icons.cloud_outlined),
+        GpsState.networkNoOwnship:        ("Test feed has no aircraft", Icons.cloud_outlined),
+        GpsState.networkNoData:           ("Internet feed unreachable", Icons.cloud_off_outlined),
       };
       final (String title, IconData icon) =
           presentation[gpsState] ?? ("GPS", Icons.gps_not_fixed);

@@ -197,7 +197,16 @@ class TrafficCache {
   bool _audibleAlertsRequested = false;
   bool _audibleAlertsHandling = false;
 
-  void putTraffic(TrafficReportMessage message) {
+  /// [fromNetwork] marks a target that came from the internet feed rather than
+  /// from a receiver.
+  void putTraffic(TrafficReportMessage message, {bool fromNetwork = false}) {
+
+    // One traffic source at a time. A receiver and the internet feed report the
+    // same aircraft under the same ICAO with different latencies, so letting
+    // both in makes shared targets jump back and forth between two positions.
+    if (fromNetwork != Storage().isNetworkSource) {
+      return;
+    }
 
     // filter own report. Guard against unset defaults (ICAO 0 / empty callsign)
     // so anonymous TIS-B targets (track-file targets often report ICAO 0 and no
@@ -241,6 +250,21 @@ class TrafficCache {
 
     // process any audible alerts from traffic (if enabled)
     handleAudibleAlerts();
+  }
+
+  /// Drop every tracked aircraft. Used when the position source changes: the
+  /// previous source's targets are no longer being updated, so leaving them in
+  /// place strands ghosts on the map until they age out.
+  void clear() {
+    _traffic.clear();
+    Storage().trafficChange.value++;
+  }
+
+  /// Drop a specific aircraft. Used when one is adopted as ownship: it stops
+  /// being inserted as traffic, so without this its last reported position
+  /// would sit on the map until it aged out.
+  void removeTraffic(int icao) {
+    _traffic.remove(icao);
   }
 
   /// Traffic ordered nearest-first. [processTrafficForAudibleAlerts] builds the
