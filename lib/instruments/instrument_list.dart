@@ -83,7 +83,7 @@ class InstrumentListState extends State<InstrumentList> {
     "PRV": "Previous", "NXT": "Next", "DIS": "Distance", "BRG": "Bearing",
     "GEL": "Ground Elev", "ETA": "ETA", "ETE": "En Route",
     "VSR": "VS Required", "UPT": "Up Timer", "DNT": "Down Timer",
-    "UTC": "UTC", "SRC": "Position", "FLT": "Flight Time", "ADSB": "ADS-B",
+    "UTC": "UTC", "SRC": "Position From", "FLT": "Flight Time", "ADSB": "Traffic From",
   };
 
   String _tileUnit(String code) {
@@ -117,12 +117,11 @@ class InstrumentListState extends State<InstrumentList> {
   String _utc = "00:00";
   String _eta = "";
   String _ete = "";
-  String _source = "Auto";
+  String _source = "";
   String _vsr = "";
   String _flightTime = "00:00";
   String _gel = "DL";
   String _adsb = "\u25cb"; // ADSB tile value: ownship tail number, else status circle
-  Color? _adsbColor; // callsign/circle color: null=default/disconnected, yellow=partial, green=connected
 
   @override
   void dispose() {
@@ -332,18 +331,10 @@ class InstrumentListState extends State<InstrumentList> {
       _timerDown = _truncate(Storage().flightDownTimer.getTime().toString().substring(2, 7));
       _utc = _truncate(_hourMinuteFormatter.format(DateTime.now().toUtc()));
       _source = Storage().positionTileLabel;
-      // ADSB: show the ownship tail number when the receiver reports it;
-      // otherwise fall back to a status circle (filled when connected, empty
-      // when not). Color reflects the receiver state (green with GPS, yellow
-      // without GPS).
-      bool connected = Storage().adsbStatus.connected;
-      bool gpsValid = Storage().adsbStatus.gpsValid;
-      // Show the tail number only while ownship reports are still arriving;
-      // otherwise it is a stale identity from minutes ago.
-      final String adsbCallsign = Storage().adsbStatus.ownshipFresh
-          ? Storage().ownshipMessageCallsign : "";
-      _adsb = adsbCallsign.isNotEmpty ? adsbCallsign : (connected ? "\u25cf" : "\u25cb");
-      _adsbColor = !connected ? null : (gpsValid ? Colors.green : Colors.yellow);
+      // ADSB names the traffic source rather than the receiver's link state:
+      // with a web feed available, "where are these targets from" is the
+      // question the symbol on the map cannot answer on its own.
+      _adsb = Storage().trafficTileLabel;
       _flightTime = _truncate((Storage().flightStatus.flightTime.toDouble() / 3600).toStringAsFixed(2));
     });
   }
@@ -471,6 +462,15 @@ class InstrumentListState extends State<InstrumentList> {
     }
   }
 
+  /// The tiles actually drawn. The traffic-source readout is forced in whenever
+  /// any traffic is coming from the internet feed: that is a safety marker, not
+  /// a preference, so it must not be possible to hide it by accident. It is not
+  /// written to settings, so the user's own choice is preserved underneath.
+  List<String> get _shown =>
+      (Storage().usesNetworkTraffic && !_visible.contains("ADSB"))
+          ? [..._visible, "ADSB"]
+          : _visible;
+
   void _saveVisible() {
     Storage().settings.setInstrumentVisible(_visible.join(","));
   }
@@ -502,75 +502,60 @@ class InstrumentListState extends State<InstrumentList> {
     _savePositions();
   }
 
+  /// The text a readout currently shows. Shared with [_measuredCellWidth] so
+  /// the column is sized from what is actually drawn in it.
+  String _valueFor(String code) {
+    switch (code) {
+      case "GS":   return _gndSpeed;
+      case "ALT":  return _altitude;
+      case "MT":   return _magneticHeading;
+      case "PRV":  return _previousDestination;
+      case "NXT":  return _destination;
+      case "BRG":  return _bearing;
+      case "DIS":  return _distance;
+      case "GEL":  return _gel;
+      case "ETA":  return _eta;
+      case "ETE":  return _ete;
+      case "VSR":  return _vsr;
+      case "UTC":  return _utc;
+      case "UPT":  return _timerUp;
+      case "DNT":  return _timerDown;
+      case "SRC":  return _source;
+      case "FLT":  return _flightTime;
+      case "ADSB": return _adsb; // tail number when reported, else a status dot
+      default:     return "";
+    }
+  }
+
   // one readout in the panel; it sizes itself to its text
   Widget _makeInstrument(String code) {
 
-    String value = "";
-    Color? valueColor; // override the value text color (used by the ADSB tile)
+    final String value = _valueFor(code);
     Function() cb = () {};
 
-    // set callbacks and connect values
     switch(code) {
-      case "GS":
-        value = _gndSpeed;
-        break;
-      case "ALT":
-        value = _altitude;
-        break;
-      case "MT":
-        value = _magneticHeading;
-        break;
       case "PRV":
-        value = _previousDestination;
         cb = _planPreviousWaypoint;
         break;
       case "NXT":
-        value = _destination;
         cb = _planNextWaypoint;
         break;
-      case "BRG":
-        value = _bearing;
-        break;
-      case "DIS":
-        value = _distance;
-        break;
-      case "GEL":
-        value = _gel;
-        break;
-      case "ETA":
-        value = _eta;
-        break;
-      case "ETE":
-        value = _ete;
-        break;
-      case "VSR":
-        value = _vsr;
-        break;
-      case "UTC":
-        value = _utc;
-        break;
       case "UPT":
-        value = _timerUp;
         cb = _startUpTimer;
         break;
       case "DNT":
-        value = _timerDown;
         cb = _startDownTimer;
         break;
       case "SRC":
-        value = _source;
         // Opens the ADS-B/position status screen, where the source and its mode
         // are explained in full. Cycling modes from a flight instrument was
         // never the right place for it.
         cb = _showAdsbDetails;
         break;
       case "FLT":
-        value = _flightTime;
         cb = _resetTacTimer;
         break;
       case "ADSB":
-        value = _adsb; // tail number when reported, otherwise the status circle
-        valueColor = _adsbColor;
         cb = _showAdsbDetails;
         break;
     }
@@ -616,7 +601,7 @@ class InstrumentListState extends State<InstrumentList> {
                     height: 1.0,
                     fontWeight: FontWeight.w600,
                     fontFeatures: const [ui.FontFeature.tabularFigures()],
-                    color: valueColor ?? stateColor ?? fg,
+                    color: stateColor ?? fg,
                   ),
                 ),
                 if (unit.isNotEmpty)
@@ -656,6 +641,15 @@ class InstrumentListState extends State<InstrumentList> {
           GpsState.noProvider => null,
           _ => Colors.amberAccent,
         };
+      case "ADSB":
+        // Orange wherever the internet feed is involved, matching the position
+        // tile, so "not from my receiver" reads the same on both.
+        if (Storage().usesNetworkTraffic) {
+          return Colors.orangeAccent;
+        }
+        return Storage().adsbStatus.trafficFresh
+            ? Colors.lightGreenAccent
+            : (Storage().adsbStatus.connected ? Colors.amberAccent : null);
       case "DNT":
         return Storage().flightDownTimer.isExpired()
             ? Colors.redAccent
@@ -671,20 +665,36 @@ class InstrumentListState extends State<InstrumentList> {
 
   /// All visible tiles as one cohesive, movable panel. Dragging anywhere on the
   /// panel background moves the whole thing; taps still reach the tiles.
+  /// Digits all take the same advance under tabular figures, so a value's width
+  /// depends only on how many of them there are. Measuring zeroes instead of the
+  /// live number keeps the column still while the number changes -- otherwise
+  /// the whole panel twitches once a second.
+  static final RegExp _digits = RegExp(r'[0-9]');
+  static String _widthTemplate(String s) => s.replaceAll(_digits, '0');
+
   /// Width one readout needs at the current type size. Measured rather than
   /// assumed, so column counts stay right as the font scales.
   double _measuredCellWidth() {
     double widest = 0;
-    for (final String code in _visible) {
+    for (final String code in _shown) {
       final String label = _tileLabels[code] ?? code;
       final TextPainter tp = TextPainter(
         text: TextSpan(text: label,
             style: TextStyle(fontSize: 9.5 * _s, letterSpacing: 0.4)),
         textDirection: ui.TextDirection.ltr,
       )..layout();
-      // value + unit is usually the wider of the two lines; allow for ~7 glyphs
-      final double valueW = 16 * _s * 0.62 * 7 + 24 * _s;
-      widest = max(widest, max(tp.width, valueW));
+      final String unit = _tileUnit(code);
+      final TextPainter vp = TextPainter(
+        text: TextSpan(
+            text: _widthTemplate(_valueFor(code)) + (unit.isEmpty ? "" : " $unit"),
+            style: TextStyle(
+              fontSize: 16 * _s,
+              fontWeight: FontWeight.w600,
+              fontFeatures: const [ui.FontFeature.tabularFigures()],
+            )),
+        textDirection: ui.TextDirection.ltr,
+      )..layout();
+      widest = max(widest, max(tp.width, vp.width));
     }
     return widest + 14 * _s;
   }
@@ -696,16 +706,16 @@ class InstrumentListState extends State<InstrumentList> {
       case PanelDock.top:
       case PanelDock.bottom:
         // a wide strip: as many as fit, but never so many it needs one row
-        return max(1, min(_visible.length, (screenW * 0.96 / cellW).floor()));
+        return max(1, min(_shown.length, (screenW * 0.96 / cellW).floor()));
       case PanelDock.left:
       case PanelDock.right:
         // a tall strip: keep it narrow, two columns only if there is real room
-        return (screenW > cellW * 5 && _visible.length > 8) ? 2 : 1;
+        return (screenW > cellW * 5 && _shown.length > 8) ? 2 : 1;
       case PanelDock.free:
         // Aim for a square block: cols * cellW ~= rows * cellH, with
         // rows = n / cols, which gives cols = sqrt(n * cellH / cellW).
         final double cellH = 34.0 * _s;
-        final int n = _visible.length;
+        final int n = _shown.length;
         final int cols = sqrt(n * cellH / cellW).round();
         return cols.clamp(1, max(1, n));
     }
@@ -733,7 +743,8 @@ class InstrumentListState extends State<InstrumentList> {
 
     final double cellW = _measuredCellWidth();
     final int perRow = _columnsForDock(screenW, screenH, cellW);
-    final int rows = (_visible.length / perRow).ceil();
+    final List<String> shown = _shown;
+    final int rows = (shown.length / perRow).ceil();
 
     final Widget table = Table(
       defaultColumnWidth: FixedColumnWidth(cellW),
@@ -743,8 +754,8 @@ class InstrumentListState extends State<InstrumentList> {
         for (int r = 0; r < rows; r++)
           TableRow(children: [
             for (int c = 0; c < perRow; c++)
-              (r * perRow + c) < _visible.length
-                  ? _makeInstrument(_visible[r * perRow + c])
+              (r * perRow + c) < shown.length
+                  ? _makeInstrument(shown[r * perRow + c])
                   : const SizedBox.shrink(),
           ]),
       ],
@@ -863,9 +874,9 @@ class InstrumentListState extends State<InstrumentList> {
                     "UPT - Tap to start/stop the up timer.\n"
                     "DNT - Tap to start/stop the down timer.\n"
                     "UTC - Coordinated Universal Time.\n"
-                    "SRC - Whether you have a position, and from where. POS=you have one (blue=from the ADS-B receiver, green=from this device). NOFIX=a GPS is present but has no fix, or the receiver is sending no position. NONE=no receiver data, or no GPS on this machine (grey). OFF=location denied or turned off (red). Tap to open the ADS-B status screen, where the source mode is set and explained.\n"
+                    "SRC - Which source is driving the aircraft symbol. Device=this machine's GPS (green), ADS-B=the receiver (blue), a tail number=synthesised from the internet feed (orange). Frozen=the last position is still on screen but nothing is refreshing it. Searching / No Fix / No Link / No GPS / Off say why there is none. Tap to open the status screen, where the source is chosen and explained.\n"
                     "FLT - Total flight time in hours. Tap to reset.\n"
-                    "ADSB- ADS-B receiver status. Shows your tail number when the receiver reports it; otherwise a circle (green \u25cf=connected, yellow \u25cf=connected without GPS, \u25cb=disconnected). Click on the tile to open the status screen.\n",
+                    "ADSB- Where the traffic on the map comes from. ADS-B=your receiver (green), Web=the internet feed (orange, seconds late), Both=receiver targets with feed targets filling the gaps. Quiet=receiver connected but hearing nothing. On the map, a filled dot on a target's label means your receiver heard it; a hollow dot means the feed relayed it. Tap to open the status screen.\n",
                     null, 30);
                 },
                 child: _menuRow(Icons.help_outline, "Help"),

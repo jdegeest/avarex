@@ -327,7 +327,7 @@ class OnBoardingScreenState extends State<OnBoardingScreen>
                 _buildGpsOption("2",
                     "External GPS/ADS-B via UDP port 4000, 43211, or 49002"),
                 _buildGpsOption("3",
-                    "Tap SRC to cycle: Auto → Internal (green) → External (blue)"),
+                    "Tap the SRC tile to open ADS-B Status, where you choose the position and traffic sources"),
               ],
             ),
           ),
