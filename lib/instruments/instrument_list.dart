@@ -450,9 +450,18 @@ class InstrumentListState extends State<InstrumentList> {
   }
 
   // load which tiles are shown; first run / empty falls back to the default few
+  /// Written when the user has hidden every readout. An empty string cannot
+  /// mean that, because it is also what "never configured" looks like -- so
+  /// turning the last tile off used to restore the five defaults, and there was
+  /// no way to clear the panel.
+  static const String _noneVisible = "-";
+
   void _loadVisible() {
     String raw = Storage().settings.getInstrumentVisible();
     _visible.clear();
+    if(raw == _noneVisible) {
+      return; // deliberately empty
+    }
     if(raw.isEmpty) {
       _visible.addAll(_defaultVisible());
     }
@@ -469,13 +478,22 @@ class InstrumentListState extends State<InstrumentList> {
   /// any traffic is coming from the internet feed: that is a safety marker, not
   /// a preference, so it must not be possible to hide it by accident. It is not
   /// written to settings, so the user's own choice is preserved underneath.
-  List<String> get _shown =>
-      (Storage().usesNetworkTraffic && !_visible.contains("ADSB"))
-          ? [..._visible, "ADSB"]
-          : _visible;
+  List<String> get _shown {
+    // Hiding every readout is a deliberate "give me a clean map", and is
+    // honoured as such -- forcing a lone tile back would make it impossible to
+    // clear the panel at all. The marker is forced only into a panel that is
+    // already showing something.
+    if (_visible.isEmpty) {
+      return _visible;
+    }
+    return (Storage().usesNetworkTraffic && !_visible.contains("ADSB"))
+        ? [..._visible, "ADSB"]
+        : _visible;
+  }
 
   void _saveVisible() {
-    Storage().settings.setInstrumentVisible(_visible.join(","));
+    Storage().settings.setInstrumentVisible(
+        _visible.isEmpty ? _noneVisible : _visible.join(","));
   }
 
   // show/hide a tile from the menu; added tiles get their default slot
@@ -780,6 +798,11 @@ class InstrumentListState extends State<InstrumentList> {
       ],
     );
 
+    if (shown.isEmpty) {
+      // Every readout hidden: show nothing at all rather than an empty frame.
+      // The corner menu stays, so the panel can be brought back.
+      return const SizedBox.shrink();
+    }
     final Widget panel = DecoratedBox(
       decoration: BoxDecoration(
         color: surface.withValues(alpha: 0.86),
