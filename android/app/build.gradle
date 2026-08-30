@@ -1,11 +1,21 @@
 plugins {
     id "com.android.application"
-    // START: FlutterFire Configuration
-    id 'com.google.gms.google-services'
-    // END: FlutterFire Configuration
     id "kotlin-android"
     id "dev.flutter.flutter-gradle-plugin"
 }
+
+// START: FlutterFire Configuration
+// The Google Services plugin hard-fails when android/app/google-services.json is
+// missing, and that file is gitignored and has never been committed -- so no
+// clone of this repo could build an APK at all without someone hand-placing it.
+//
+// Apply it only when the config is actually present. Without it the app builds
+// and runs; the Firebase-backed features (Airport Businesses & Reviews, sign-in)
+// are simply unavailable, which is already the case on desktop.
+if (file("google-services.json").exists()) {
+    apply plugin: "com.google.gms.google-services"
+}
+// END: FlutterFire Configuration
 
 def localProperties = new Properties()
 def localPropertiesFile = rootProject.file('local.properties')
