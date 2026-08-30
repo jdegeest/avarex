@@ -141,6 +141,23 @@ class AppSettings {
     return provider.getValue("key-gps-source-mode", defaultValue: "Auto") as String;
   }
 
+  void setTrafficSourceMode(String mode) {
+    provider.setString("key-traffic-source-mode", mode);
+  }
+
+  /// Traffic source was once implied by the position source: choosing "Network"
+  /// switched both. Anyone upgrading has no stored value, so derive their first
+  /// one from what the position source used to mean, then leave the two
+  /// independent from that point on.
+  String getTrafficSourceMode(String gpsSourceMode) {
+    final String stored =
+        provider.getValue("key-traffic-source-mode", defaultValue: "") as String;
+    if (stored.isNotEmpty) {
+      return stored;
+    }
+    return gpsSourceMode == "Network" ? "Internet" : "Receiver";
+  }
+
   void setUnits(String units) {
     provider.setString("key-units", units);
     _localUnits = units;

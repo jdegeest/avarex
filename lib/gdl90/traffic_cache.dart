@@ -180,8 +180,10 @@ class TrafficCache {
   /// altitude gates are skipped entirely and received traffic is shown as-is.
   /// Audible alerting is unaffected: it already returns early without a valid
   /// ownship position, ground speed, or airborne state.
+  /// A frozen position is not a reference either: filtering and projecting
+  /// against a fix from minutes ago produces confident nonsense.
   static bool get _hasOwnshipReference =>
-      !Gps.isPositionCloseToZero(Storage().position);
+      Storage().positionIsLive && !Gps.isPositionCloseToZero(Storage().position);
 
   /// Rank used both for eviction and for ordering audible alerts: 3d distance,
   /// treating 1 nm of horizontal separation as 500 ft of vertical (C182 at
@@ -197,14 +199,22 @@ class TrafficCache {
   bool _audibleAlertsRequested = false;
   bool _audibleAlertsHandling = false;
 
-  /// [fromNetwork] marks a target that came from the internet feed rather than
-  /// from a receiver.
-  void putTraffic(TrafficReportMessage message, {bool fromNetwork = false}) {
+  /// [source] is where this report arrived from; it is carried on the target so
+  /// the map can say which of them are seconds late.
+  void putTraffic(TrafficReportMessage message,
+      {TrafficSource source = TrafficSource.receiver}) {
 
-    // One traffic source at a time. A receiver and the internet feed report the
-    // same aircraft under the same ICAO with different latencies, so letting
-    // both in makes shared targets jump back and forth between two positions.
-    if (fromNetwork != Storage().isNetworkSource) {
+    if (!Storage().acceptsTrafficFrom(source)) {
+      return;
+    }
+    message.source = source;
+
+    // With both sources running, the receiver wins per aircraft: it hears the
+    // transmission directly, while the feed relays a ground station's view of
+    // the same aeroplane seconds later. Letting the feed overwrite would make
+    // shared targets jump back and forth between two positions.
+    if (source == TrafficSource.network && _isHeldFreshByReceiver(message)) {
+      message.filter = TrafficFilter.duplicate;
       return;
     }
 
@@ -252,6 +262,38 @@ class TrafficCache {
     handleAudibleAlerts();
   }
 
+  /// True when the receiver is already showing this aircraft with a report we
+  /// still consider current.
+  ///
+  /// Matching by ICAO covers the ordinary case. TIS-B and ADS-R targets often
+  /// arrive with ICAO 0 and no callsign, though, so they cannot be keyed --
+  /// hence the positional fallback, which treats a receiver target within
+  /// [_kDuplicateNmi] and [_kDuplicateFt] as the same aeroplane.
+  static const double _kDuplicateNmi = 0.2;
+  static const double _kDuplicateFt = 200;
+  bool _isHeldFreshByReceiver(TrafficReportMessage message) {
+    final int nowMs = DateTime.now().millisecondsSinceEpoch;
+    final Traffic? byIcao = message.icao != 0 ? _traffic[message.icao] : null;
+    if (byIcao != null &&
+        byIcao.message.source == TrafficSource.receiver &&
+        !byIcao.isStaleAt(nowMs)) {
+      return true;
+    }
+    for (final Traffic t in _traffic.values) {
+      if (t.message.source != TrafficSource.receiver || t.isStaleAt(nowMs)) {
+        continue;
+      }
+      if ((t.message.altitude - message.altitude).abs() > _kDuplicateFt) {
+        continue;
+      }
+      if (GeoCalculations().calculateDistance(
+              t.message.coordinates, message.coordinates) <= _kDuplicateNmi) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /// Drop every tracked aircraft. Used when the position source changes: the
   /// previous source's targets are no longer being updated, so leaving them in
   /// place strands ghosts on the map until they age out.
@@ -282,12 +324,16 @@ class TrafficCache {
       _audibleAlertsRequested = true;
       return;
     }
-    // process when traffic layer is on
-    if (Storage().settings.isAudibleAlertsEnabled() && Storage().trafficLayerOn) {
+    // Process when the traffic layer is on and we have a position worth
+    // measuring against. Alerting off a frozen fix announces conflicts with an
+    // aeroplane that is no longer where the app thinks it is.
+    if (Storage().settings.isAudibleAlertsEnabled() &&
+        Storage().trafficLayerOn &&
+        Storage().positionIsLive) {
       _audibleAlertsHandling = true;   
       TrafficAlerts.getAndStartTrafficAlerts().then((alerts) {
         // TODO: Set all of the "pref" settings from new Storage params (which in turn have a config UI?)
-        alerts?.processTrafficForAudibleAlerts(_trafficByDistance(), Storage().position, Storage().lastMsGpsSignal, Storage().vSpeed,
+        alerts?.processTrafficForAudibleAlerts(_trafficByDistance(), Storage().position, Storage().lastPositionUpdateMs, Storage().vSpeed,
           Storage().airborne);
         _audibleAlertsRequested = false;
         Future.delayed(const Duration(milliseconds: _kAudibleAlertCallMinDelayMs), () {
@@ -356,15 +402,19 @@ class TrafficPainter extends AbstractCachedCustomPainter {
   final TrafficAlertLevel _alertLevel;
   final bool _isAirborne;
   final bool _isStale;
+  final bool _fromNetwork;
 
   TrafficPainter(Traffic traffic)
     : _alertLevel = traffic.alertLevel,
       _isAirborne = traffic.message.airborne,
       _isStale = traffic.isStale,
-      // staleness is part of the icon's appearance, so it must be part of the
-      // cache key or a greyed icon would be served for a live target
+      _fromNetwork = traffic.message.source == TrafficSource.network,
+      // staleness and source are part of the icon's appearance, so they must be
+      // part of the cache key or a greyed or hollow icon would be served for a
+      // live receiver target
       super([traffic.alertLevel.index, traffic.message.airborne ? 1 : 0,
-             traffic.isStale ? 1 : 0],
+             traffic.isStale ? 1 : 0,
+             traffic.message.source == TrafficSource.network ? 1 : 0],
         false, const Size(_kCanvasSize, _kCanvasSize));
 
   @override
@@ -387,8 +437,23 @@ class TrafficPainter extends AbstractCachedCustomPainter {
     }
 
     const Offset center = Offset(_kCenter, _kCenter);
-    canvas.drawCircle(center, _kCircleRadius,
-      Paint()..color = fillColor.withValues(alpha: opacity));
+    if (_fromNetwork) {
+      // Hollow: this is a ground station's relay of the aircraft, seconds old,
+      // not something we heard it transmit. Same colour, so the conflict
+      // information still reads at a glance; different shape, so you always
+      // know which picture you are looking at.
+      canvas.drawCircle(center, _kCircleRadius,
+        Paint()..color = _kOutlineColor.withValues(alpha: opacity * 0.45));
+      canvas.drawCircle(center, _kCircleRadius - _kOutlineWidth / 2,
+        Paint()
+          ..color = fillColor.withValues(alpha: opacity)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = _kOutlineWidth + 1);
+    }
+    else {
+      canvas.drawCircle(center, _kCircleRadius,
+        Paint()..color = fillColor.withValues(alpha: opacity));
+    }
     canvas.drawCircle(center, _kCircleRadius,
       Paint()
         ..color = _kOutlineColor.withValues(alpha: opacity)
@@ -510,13 +575,24 @@ class TrafficIdPainter extends AbstractCachedCustomPainter {
       fontWeight: FontWeight.w600, fontSize: _trafficIdFontSize, height: 1.05);
   static const double _offsetX = 0, _offsetY = 0;
 
+  /// Leads the callsign so every target says where it came from, without
+  /// having to compare one symbol's fill against another's across the screen.
+  /// Filled dot: heard by the receiver. Hollow dot: relayed by the internet
+  /// feed, and therefore seconds old.
+  static String sourceGlyph(TrafficSource source) =>
+      source == TrafficSource.network ? "\u25cb " : "\u25cf ";
+
   final String _trafficId;
   final bool _isAirborne;
 
+  static String _idOf(final Traffic t) =>
+      sourceGlyph(t.message.source) +
+      (t.message.callSign.isNotEmpty ? t.message.callSign : t.message.icao.toString());
+
   TrafficIdPainter(final Traffic t): 
-    _trafficId = t.message.callSign.isNotEmpty ? t.message.callSign : t.message.icao.toString(),
+    _trafficId = _idOf(t),
     _isAirborne = t.message.airborne,
-    super([ (t.message.callSign.isNotEmpty ? t.message.callSign : t.message.icao.toString()).hashCode, t.message.airborne ? 1 : 0 ], 
+    super([ _idOf(t).hashCode, t.message.airborne ? 1 : 0 ], 
       // true => draw the picture, not a bitmap scaled up on a HiDPI display
       true, const Size(140, 18));
     

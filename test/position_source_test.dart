@@ -1,3 +1,4 @@
+import 'package:avaremp/gdl90/traffic_report_message.dart';
 import 'package:avaremp/io/gps.dart';
 import 'package:avaremp/storage.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -50,5 +51,47 @@ void main() {
     expect(s.acceptsPositionFrom(PositionOrigin.network), isFalse);
     s.gpsInternal = false;
     expect(s.acceptsPositionFrom(PositionOrigin.network), isFalse);
+  });
+
+  // Traffic source is chosen independently of position source. Sharing one mode
+  // meant you could not watch the receiver's targets while flying a synthesised
+  // position, or the reverse.
+  group('traffic admission', () {
+    const List<(String, bool, bool)> cases = [
+      // mode,      receiver accepted, feed accepted
+      ("Receiver",  true,  false),
+      ("Internet",  false, true),
+      ("Both",      true,  true),
+    ];
+
+    for (final (String mode, bool receiver, bool feed) in cases) {
+      test(mode, () {
+        s.trafficSourceMode = mode;
+        expect(s.acceptsTrafficFrom(TrafficSource.receiver), receiver);
+        expect(s.acceptsTrafficFrom(TrafficSource.network), feed);
+        expect(s.usesReceiverTraffic, receiver);
+        expect(s.usesNetworkTraffic, feed);
+      });
+    }
+
+    test('the feed runs whenever either half of the app wants it', () {
+      s.trafficSourceMode = "Receiver";
+      s.gpsSourceMode = "Auto";
+      expect(s.needsNetworkFeed, isFalse);
+      s.gpsSourceMode = "Network"; // position from the feed, traffic from the receiver
+      expect(s.needsNetworkFeed, isTrue);
+      s.gpsSourceMode = "Auto";
+      s.trafficSourceMode = "Both"; // traffic from the feed, position from the receiver
+      expect(s.needsNetworkFeed, isTrue);
+    });
+  });
+
+  group('age wording', () {
+    test('reads as a person would say it', () {
+      expect(Storage.describeAge(500), "just now");
+      expect(Storage.describeAge(12000), "12 s ago");
+      expect(Storage.describeAge(240000), "4 min ago");
+      expect(Storage.describeAge(7200000), "2 h ago");
+    });
   });
 }

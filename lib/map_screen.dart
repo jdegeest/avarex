@@ -1312,7 +1312,8 @@ class MapScreenState extends State<MapScreen> {
                             Constants.screenHeight(context)) / 2,
                         point: current,
                         child: Transform.rotate(angle: value.heading * pi / 180,
-                            child: CustomPaint(painter: Plane(Storage().imagePlane)),
+                            child: CustomPaint(painter: Plane(Storage().imagePlane,
+                                live: Storage().positionIsLive)),
                         ),
                     ),
                     if (wd != null && ws != null)
@@ -1403,11 +1404,10 @@ class MapScreenState extends State<MapScreen> {
             child: ValueListenableBuilder<bool>(
                 valueListenable: Storage().warningChange,
                 builder: (context, value, _) {
-                  return WarningsWidget(gpsNotPermitted: Storage().gpsNotPermitted,
-                    gpsDisabled: Storage().gpsDisabled, chartsMissing: Storage().chartsMissing,
+                  return WarningsWidget(chartsMissing: Storage().chartsMissing,
                     dataExpired: Storage().dataExpired,
                     signed: Storage().settings.isSigned(),
-                    gpsNoLock: Storage().gpsNoLock, exceptions: Storage().getExceptions());
+                    exceptions: Storage().getExceptions());
                 }
             )
         ),
@@ -1442,55 +1442,6 @@ class MapScreenState extends State<MapScreen> {
                   }
                 ),
               const Positioned.fill(child: RepaintBoundary(child: InstrumentList())),
-              // Unmissable while position and traffic come from an internet
-              // feed: that data is seconds old with coverage gaps, and must
-              // never be mistaken for a receiver.
-              // The source can change from another screen, which does not rebuild
-              // this one, so the mode test lives inside the builder and is
-              // re-evaluated on the clock rather than only at map build time.
-              Positioned(
-                  top: 2,
-                  left: 0,
-                  right: 0,
-                  child: IgnorePointer(
-                    child: Align(
-                      alignment: Alignment.topCenter,
-                      child: ValueListenableBuilder<int>(
-                        valueListenable: Storage().timeChange,
-                        builder: (context, _, __) {
-                          if (!Storage().isNetworkSource) {
-                            return const SizedBox.shrink();
-                          }
-                          final GpsState state = Storage().gpsState;
-                          final bool live = state != GpsState.networkNoData;
-                          return Container(
-                            decoration: BoxDecoration(
-                              color: (live ? Colors.orange.shade800 : Colors.red.shade800)
-                                  .withValues(alpha: 0.92),
-                              borderRadius: const BorderRadius.all(Radius.circular(3)),
-                            ),
-                            padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 7),
-                            child: Text(
-                              switch (state) {
-                                GpsState.networkFix =>
-                                  "TEST DATA \u2014 INTERNET FEED",
-                                GpsState.networkNoOwnship =>
-                                  "TEST DATA \u2014 TRAFFIC ONLY",
-                                _ => "TEST DATA \u2014 FEED UNREACHABLE",
-                              },
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 10,
-                                fontWeight: FontWeight.w700,
-                                letterSpacing: 0.5,
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-                    ),
-                  ),
-                ),
               // warn
               Positioned(
                 child: Align(
@@ -1924,7 +1875,13 @@ class MapScreenState extends State<MapScreen> {
 class Plane extends CustomPainter {
   final ui.Image? image;
 
-  Plane(this.image);
+  /// False when the position under this symbol is not current -- the selected
+  /// source has stopped supplying one and the aircraft is sitting where it was
+  /// last seen. Drawn washed out, on the same principle as greyed traffic: a
+  /// stale position must not look like a live one.
+  final bool live;
+
+  Plane(this.image, {this.live = true});
 
   final _paintCenter = Paint()
     ..style = PaintingStyle.fill
@@ -1939,14 +1896,23 @@ class Plane extends CustomPainter {
       return;
     }
     paintImage(canvas: canvas, rect:
-      Rect.fromLTWH(0, size.height / 2 - size.width / 2, size.width, size.width), image: img);
-    _paintCenter.shader = ui.Gradient.linear(Offset(size.width / 2, size.height / 2 - size.width * 3 / 4), Offset(size.width / 2, 0), [Colors.red, Colors.white]);
-    canvas.drawLine(Offset(size.width / 2, size.height / 2 - size.width * 3 / 4), Offset(size.width / 2, 0), _paintCenter);
-    _paintCenter.shader = null;
+      Rect.fromLTWH(0, size.height / 2 - size.width / 2, size.width, size.width),
+      image: img, opacity: live ? 1.0 : 0.35,
+      colorFilter: live ? null
+          : const ui.ColorFilter.mode(Color(0xFF9E9E9E), BlendMode.saturation));
+    if (live) {
+      // The track line is a projection of where we are going, which means
+      // nothing when the position is not moving; drop it rather than draw a
+      // heading we are not flying.
+      _paintCenter.shader = ui.Gradient.linear(Offset(size.width / 2, size.height / 2 - size.width * 3 / 4), Offset(size.width / 2, 0), [Colors.red, Colors.white]);
+      canvas.drawLine(Offset(size.width / 2, size.height / 2 - size.width * 3 / 4), Offset(size.width / 2, 0), _paintCenter);
+      _paintCenter.shader = null;
+    }
   }
 
   @override
-  bool shouldRepaint(Plane oldDelegate) => !identical(oldDelegate.image, image);
+  bool shouldRepaint(Plane oldDelegate) =>
+      !identical(oldDelegate.image, image) || oldDelegate.live != live;
 }
 
 // for scale measurement

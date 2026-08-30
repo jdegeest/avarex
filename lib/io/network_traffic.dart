@@ -194,7 +194,7 @@ class NetworkTraffic {
       // Timestamp with the feed's own age so the existing staleness rules grey
       // these out exactly as they would a weak receiver.
       m.time = DateTime.now().toUtc().subtract(Duration(milliseconds: (seen * 1000).round()));
-      Storage().trafficCache.putTraffic(m, fromNetwork: true);
+      Storage().trafficCache.putTraffic(m, source: TrafficSource.network);
       count++;
     }
     lastAircraftCount = count;

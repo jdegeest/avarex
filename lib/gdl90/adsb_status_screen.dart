@@ -3,7 +3,6 @@ import 'package:avaremp/gdl90/ground_station_cache.dart';
 import 'package:avaremp/gdl90/stratus_open_mode.dart';
 import 'package:avaremp/gdl90/traffic_report_message.dart';
 import 'package:avaremp/io/gps.dart';
-import 'package:avaremp/io/network_traffic.dart';
 import 'package:avaremp/storage.dart';
 import 'package:avaremp/utils/geo_calculations.dart';
 import 'package:avaremp/utils/toast.dart';
@@ -71,9 +70,60 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
     );
   }
 
-  /// A group heading. The three GPS-ish rows read as duplicates without one:
-  /// "position in use" is about us, "receiver's own GPS fix" is about the
-  /// hardware, and "this device's GPS" is about the tablet.
+  /// One colour rule for every source row, so "working" looks the same whether
+  /// it is a GPS chip, a receiver or a web feed.
+  Color _healthColor(SourceHealth h) {
+    switch (h) {
+      case SourceHealth.absent:   return Colors.grey;
+      case SourceHealth.failed:   return Colors.red;
+      case SourceHealth.idle:     return Colors.grey;
+      case SourceHealth.degraded: return Colors.amber;
+      case SourceHealth.ok:       return Colors.green;
+    }
+  }
+
+  /// One candidate source, describing only itself. [selected] marks the one the
+  /// current mode actually draws from -- filled bullet in use, hollow standing
+  /// by -- which is what makes a list of three sources readable at a glance.
+  Widget _candidateTile(IconData icon, String title,
+      (String, SourceHealth) status, bool selected) {
+    final (String text, SourceHealth health) = status;
+    final Color color = _healthColor(health);
+    return Card(
+      child: ListTile(
+        dense: true,
+        leading: Icon(icon, color: selected ? color : color.withValues(alpha: 0.45)),
+        title: Row(children: [
+          Text(selected ? "\u25cf  " : "\u25cb  ",
+              style: TextStyle(color: color, fontSize: 12)),
+          Flexible(child: Text(title,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                  fontWeight: selected ? FontWeight.bold : FontWeight.normal))),
+        ]),
+        trailing: Text(text, style: TextStyle(color: color, fontSize: 12)),
+      ),
+    );
+  }
+
+  /// A source-mode selector. Tapping cycles it; the subtitle says what the
+  /// current choice actually does, so the effect of the tap is never inferred.
+  Widget _modeTile(String title, String value, String description, VoidCallback onTap) {
+    return Card(
+      child: ListTile(
+        dense: true,
+        leading: const Icon(Icons.tune, color: Colors.grey),
+        title: Text(title),
+        trailing: Text(value, style: const TextStyle(fontWeight: FontWeight.bold)),
+        subtitle: Text("$description\nTap to change."),
+        isThreeLine: true,
+        onTap: onTap,
+      ),
+    );
+  }
+
+  /// A group heading, so the three groups do not read as one long list of
+  /// near-duplicate rows.
   Widget _sectionHeader(String title, String subtitle) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
@@ -340,147 +390,106 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
                       : (!s.gpsValid ? Colors.amber : Colors.green);
                   return Column(
                     children: [
-                      _sectionHeader("POSITION", "where your own position comes from"),
-                      // Where position is actually coming from, and why not, if
-                      // not. This covers the whole chain; the receiver's own fix
-                      // is reported separately under RECEIVER below.
-                      ListTile(
-                        dense: true,
-                        leading: Icon(Icons.my_location, color: switch (Storage().gpsState) {
-                          GpsState.internalFix => Colors.green,
-                          GpsState.externalFix => Colors.blue,
-                          GpsState.internalPermissionDenied ||
-                          GpsState.internalServiceOff => Colors.red,
-                          GpsState.noProvider => Colors.grey,
-                          _ => Colors.amber,
-                        }),
-                        title: const Text("Position in use"),
-                        trailing: Text(Storage().gpsStateLabel,
-                            style: const TextStyle(fontWeight: FontWeight.bold)),
-                        subtitle: Text(Storage().gpsStateMessage),
-                        isThreeLine: true,
+                      _sectionHeader("POSITION",
+                          "which source is driving the aircraft symbol"),
+                      _modeTile(
+                        "Position source",
+                        Storage().positionSourceLabel,
+                        Storage().gpsSourceModeDescription,
+                        () => setState(() => Storage().cycleGpsSourceMode()),
                       ),
-                      // Mode selection lives here, not on a flight instrument:
-                      // it is a setup decision, and this screen has room to say
-                      // what each mode actually does.
-                      ListTile(
-                        dense: true,
-                        leading: const Icon(Icons.tune, color: Colors.grey),
-                        title: const Text("Source mode"),
-                        trailing: Text(Storage().gpsSourceMode,
-                            style: const TextStyle(fontWeight: FontWeight.bold)),
-                        subtitle: Text("${Storage().gpsSourceModeDescription}\nTap to change."),
-                        isThreeLine: true,
-                        onTap: () => setState(() => Storage().cycleGpsSourceMode()),
-                      ),
-                      // Network source: which aircraft in the feed to fly as.
-                      if (Storage().isNetworkSource)
-                        ListTile(
+                      // Every candidate, each describing only itself, with the
+                      // selected one marked. The same hardware used to be
+                      // described from three different angles in three tiles
+                      // that were free to disagree with each other.
+                      _candidateTile(Icons.smartphone, "This device's GPS",
+                          Storage().deviceGpsHealth,
+                          Storage().acceptsPositionFrom(PositionOrigin.internal)),
+                      _candidateTile(Icons.settings_input_antenna, "ADS-B receiver",
+                          Storage().receiverPositionHealth,
+                          Storage().acceptsPositionFrom(PositionOrigin.external)),
+                      _candidateTile(Icons.cloud_outlined, "Internet feed",
+                          Storage().feedPositionHealth,
+                          Storage().acceptsPositionFrom(PositionOrigin.network)),
+                      // The answer to "where is my position actually coming
+                      // from", in one sentence -- including when the honest
+                      // answer is that it is not coming from anywhere any more.
+                      Card(
+                        child: ListTile(
                           dense: true,
-                          leading: const Icon(Icons.badge_outlined, color: Colors.orange),
-                          title: const Text("Fly as (tail number)"),
-                          subtitle: const Text(
-                              "Adopt this aircraft from the internet feed as ownship. "
-                              "Leave blank for traffic only. Test data -- seconds of "
-                              "latency and coverage gaps; not for navigation."),
+                          leading: Icon(Icons.place_outlined,
+                              color: Storage().positionIsLive
+                                  ? Colors.green
+                                  : (Storage().positionIsFrozen
+                                      ? Colors.amber : Colors.grey)),
+                          title: Text(
+                            Gps.isPositionCloseToZero(Storage().position)
+                                ? "No position"
+                                : "${Storage().position.latitude.toStringAsFixed(4)}, "
+                                  "${Storage().position.longitude.toStringAsFixed(4)}"
+                                  "    ${(Storage().position.altitude * Storage().units.mToF).round()} ft",
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          subtitle: Text(Storage().positionProvenanceMessage),
                           isThreeLine: true,
-                          trailing: SizedBox(
-                            width: 110,
-                            child: TextField(
-                              controller: _tailController,
-                              textCapitalization: TextCapitalization.characters,
-                              decoration: const InputDecoration(
-                                hintText: "N719CG",
-                                isDense: true,
+                        ),
+                      ),
+
+                      _sectionHeader("TRAFFIC",
+                          "where the targets on the map come from"),
+                      _modeTile(
+                        "Traffic source",
+                        Storage().trafficSourceLabel,
+                        Storage().trafficSourceModeDescription,
+                        () => setState(() => Storage().cycleTrafficSourceMode()),
+                      ),
+                      _candidateTile(Icons.settings_input_antenna, "ADS-B receiver",
+                          Storage().receiverTrafficHealth,
+                          Storage().usesReceiverTraffic),
+                      _candidateTile(Icons.cloud_outlined, "Internet feed",
+                          Storage().feedTrafficHealth,
+                          Storage().usesNetworkTraffic),
+                      // Fly-as belongs with the feed: it is the one setting that
+                      // turns feed traffic into a position.
+                      if (Storage().needsNetworkFeed)
+                        Card(
+                          child: ListTile(
+                            dense: true,
+                            leading: const Icon(Icons.badge_outlined, color: Colors.orange),
+                            title: const Text("Fly as (tail number)"),
+                            subtitle: const Text(
+                                "Adopt this aircraft from the feed as ownship. Leave "
+                                "blank for traffic only. Test data -- seconds of "
+                                "latency and coverage gaps; not for navigation."),
+                            isThreeLine: true,
+                            trailing: SizedBox(
+                              width: 110,
+                              child: TextField(
+                                controller: _tailController,
+                                textCapitalization: TextCapitalization.characters,
+                                decoration: const InputDecoration(
+                                  hintText: "N719CG",
+                                  isDense: true,
+                                ),
+                                onChanged: (v) {
+                                  Storage().settings
+                                      .setNetworkOwnshipTail(v.trim().toUpperCase());
+                                  // Drop the old aircraft immediately rather
+                                  // than letting its last position sit there
+                                  // wearing the new tail number.
+                                  Storage().clearNetworkOwnship();
+                                },
                               ),
-                              onChanged: (v) {
-                                Storage().settings
-                                    .setNetworkOwnshipTail(v.trim().toUpperCase());
-                                // Drop the old aircraft immediately rather than
-                                // letting its last position sit there wearing
-                                // the new tail number.
-                                Storage().clearNetworkOwnship();
-                              },
                             ),
                           ),
                         ),
-                      if (Storage().isNetworkSource)
-                        _statusTile(
-                          Icons.cloud_download_outlined,
-                          "Feed",
-                          !NetworkTraffic().running
-                              ? "stopped"
-                              : NetworkTraffic().healthy
-                                  ? "${NetworkTraffic().lastAircraftCount} aircraft"
-                                      "${NetworkTraffic().consecutiveFailures > 0 ? ", ${NetworkTraffic().consecutiveFailures} retrying" : ""}"
-                                  : "unreachable: ${NetworkTraffic().lastError ?? "no response"}",
-                          !NetworkTraffic().running
-                              ? Colors.grey
-                              : NetworkTraffic().healthy
-                                  ? Colors.orange
-                                  : Colors.red,
-                        ),
-                      // Colour by whether the stream is still live, not by
-                      // whether anything ever arrived -- a count from minutes
-                      // ago is not a healthy receiver.
-                      // The device's own GPS, reported separately from the
-                      // receiver: this screen is where you come to find out why
-                      // you have no position, and "is there a GPS in this thing"
-                      // is the first question.
-                      _statusTile(
-                        Icons.satellite_alt,
-                        "This device's GPS",  // as opposed to the receiver's, above
-                        Storage().gpsNoProvider
-                            ? "not present"
-                            : (Storage().gpsNotPermitted
-                                ? "access denied"
-                                : (Storage().gpsDisabled
-                                    ? "services off"
-                                    : (Storage().gpsNoLock ? "present, no fix" : "present, fix"))),
-                        Storage().gpsNoProvider
-                            ? Colors.grey
-                            : (Storage().gpsNotPermitted || Storage().gpsDisabled
-                                ? Colors.red
-                                : (Storage().gpsNoLock ? Colors.amber : Colors.green)),
-                      ),
-                      _statusTile(
-                        Icons.place_outlined,
-                        "Current position",
-                        Gps.isPositionCloseToZero(Storage().position)
-                            ? "none"
-                            : "${Storage().position.latitude.toStringAsFixed(4)}, "
-                              "${Storage().position.longitude.toStringAsFixed(4)}  "
-                              "${(Storage().position.altitude * Storage().units.mToF).round()} ft",
-                        Gps.isPositionCloseToZero(Storage().position)
-                            ? Colors.grey : Colors.green,
-                      ),
-                      _sectionHeader("RECEIVER", "what the ADS-B hardware is doing"),
+
+                      _sectionHeader("RECEIVER", "the ADS-B hardware's own link"),
                       _statusTile(
                         Icons.settings_input_antenna,
                         "Connection",
                         s.connected ? "Connected" : "Disconnected",
                         connColor,
-                      ),
-                      _boolTile(Icons.gps_fixed, "Receiver's own GPS fix", s.gpsValid),
-                      _statusTile(
-                        Icons.flight,
-                        "Ownship reports",
-                        s.typeCount(0x0A) == 0
-                            ? "none received"
-                            : "${s.typeCount(0x0A)}  (${s.secondsSinceOwnship}s ago)",
-                        s.typeCount(0x0A) == 0
-                            ? Colors.grey
-                            : (s.ownshipFresh ? Colors.green : Colors.amber),
-                      ),
-                      _statusTile(
-                        Icons.radar,
-                        "Traffic reports",
-                        s.trafficMessageCount == 0
-                            ? "none received"
-                            : "${s.trafficMessageCount}  (${s.secondsSinceTraffic}s ago)",
-                        s.trafficMessageCount == 0
-                            ? Colors.grey
-                            : (s.trafficFresh ? Colors.green : Colors.amber),
                       ),
                       _statusTile(
                         Icons.favorite,

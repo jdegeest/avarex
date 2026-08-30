@@ -11,6 +11,7 @@ enum TrafficFilter {
   none,     // displayed
   ownship,  // matched our ownship ICAO/callsign ("that's us")
   range,    // outside the current traffic altitude filter
+  duplicate,// the receiver is already showing this aircraft, live
 }
 
 /// What the GDL90 "tt" field actually contains, per the misc nibble's low two
@@ -18,6 +19,12 @@ enum TrafficFilter {
 /// where the byte is typically 0 -- was used as if the target were tracking due
 /// north, manufacturing conflicts that do not exist.
 enum TrackType { invalid, trueTrack, magneticHeading, trueHeading }
+
+/// Which pipe a traffic report arrived through. A receiver's report is what the
+/// aircraft is transmitting right now; the internet feed's copy of the same
+/// aircraft is a ground station's view of it, seconds old. They are not
+/// interchangeable, so every target carries the answer and the map says so.
+enum TrafficSource { receiver, network }
 
 class TrafficReportMessage extends Message {
   double altitude = -305;
@@ -37,6 +44,7 @@ class TrafficReportMessage extends Message {
   int nacp = 0;
   int emergencyCode = 0;
   TrafficFilter filter = TrafficFilter.none; // set by TrafficCache.putTraffic
+  TrafficSource source = TrafficSource.receiver;
 
   /// Ground track in degrees TRUE, or null when the transmitter provided no
   /// usable direction. Collision projection must skip targets returning null --

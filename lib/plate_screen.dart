@@ -1249,7 +1249,17 @@ class _PlatePainter extends CustomPainter {
         //draw airplane
         canvas.translate(offsetPlane.dx, offsetPlane.dy);
         canvas.rotate((heading + angle) * pi / 180);
-        canvas.drawImage(_imagePlane!, Offset(-_imagePlane!.width / 2, -_imagePlane!.height / 2), _paint);
+        // Washed out when the position is not current, the same as on the map:
+        // on a plate a frozen aircraft symbol is the most misleading of all.
+        final bool live = Storage().positionIsLive;
+        canvas.drawImage(_imagePlane!,
+            Offset(-_imagePlane!.width / 2, -_imagePlane!.height / 2),
+            live ? _paint : (Paint()
+              ..isAntiAlias = true
+              ..filterQuality = FilterQuality.high
+              ..color = const Color(0x59FFFFFF)
+              ..colorFilter = const ui.ColorFilter.mode(
+                  Color(0xFF9E9E9E), BlendMode.saturation)));
         // draw all based on screen width, height
         _paintLine.shader = ui.Gradient.linear(Offset(0, 2 * (size.height + size.width) / 64), Offset(0, -(size.height + size.width) / 2), [Colors.red, Colors.white]);
         canvas.drawLine(Offset(0, (size.height + size.width) / 64 - _imagePlane!.height), Offset(0, -(size.height + size.width) / 2), _paintLine);

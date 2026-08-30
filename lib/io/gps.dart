@@ -36,6 +36,22 @@ enum GpsState {
 /// source change, and they used to disagree indefinitely: a receiver that got
 /// its fix while the app sat in Network mode kept pushing its own position in,
 /// while every label still named the tail number we thought we were spoofing.
+/// How well one candidate source is doing, independent of whether it is the one
+/// selected. The diagnostics screen maps this to a colour in a single place, so
+/// every source row is coloured by the same rule.
+enum SourceHealth {
+  /// Not present at all -- no hardware, no provider, no connection.
+  absent,
+  /// Present but failing in a way the user may be able to fix.
+  failed,
+  /// Working, but not selected, so it is not being used.
+  idle,
+  /// Selected and reachable, but not delivering a usable position or targets.
+  degraded,
+  /// Delivering.
+  ok,
+}
+
 enum PositionOrigin {
   /// Nothing has supplied a position since the last source change.
   none,

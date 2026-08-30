@@ -24,6 +24,7 @@ import 'package:avaremp/gdl90/fis_block_cache.dart';
 import 'package:avaremp/gdl90/nexrad_cache.dart';
 import 'package:avaremp/gdl90/ownship_message.dart';
 import 'package:avaremp/gdl90/traffic_cache.dart';
+import 'package:avaremp/gdl90/traffic_report_message.dart';
 import 'package:avaremp/nmea/nmea_ownship_message.dart';
 import 'package:avaremp/utils/path_utils.dart';
 import 'package:avaremp/instruments/pfd_painter.dart';
@@ -177,29 +178,73 @@ class Storage {
   }
   bool gpsNoLock = false;
   int _lastMsGpsSignal = DateTime.now().millisecondsSinceEpoch;
-  int get lastMsGpsSignal { return _lastMsExternalSignal; } // read-only timestamp exposed for audible alerts, among any other interested parties
   int _lastMsExternalSignal = DateTime.now().millisecondsSinceEpoch - gpsSwitchoverTimeMs;
   bool gpsInternal = true;
-  // GPS source mode: "Auto", "Internal", "External"
+
+  // ---------------------------------------------------------------------------
+  // Source selection.
+  //
+  // Position and traffic are chosen independently. They used to share one mode
+  // string, which meant you could not run the receiver's traffic while flying a
+  // synthesised position, or watch internet traffic while navigating on a real
+  // fix. The stored values are unchanged so existing settings still load.
+  // ---------------------------------------------------------------------------
+
+  /// Where ownship position comes from: "Auto", "Internal", "External", "Network".
   String gpsSourceMode = "Auto";
   static const List<String> _gpsSourceModes = ["Auto", "Internal", "External", "Network"];
 
-  void initGpsSourceMode() {
+  /// Where map traffic comes from: "Receiver", "Internet", "Both".
+  String trafficSourceMode = "Receiver";
+  static const List<String> _trafficSourceModes = ["Receiver", "Internet", "Both"];
+
+  void initSourceModes() {
     gpsSourceMode = settings.getGpsSourceMode();
-    applyPositionSource();
+    trafficSourceMode = settings.getTrafficSourceMode(gpsSourceMode);
+    applySourceModes();
   }
 
-  /// True while position and traffic are coming from an internet feed rather
-  /// than a receiver. This is test data: it carries seconds of latency and
-  /// coverage gaps, and must be obvious on screen.
+  /// True while ownship position is synthesised from an internet feed. This is
+  /// test data: it carries seconds of latency and coverage gaps, and must be
+  /// obvious on screen.
   bool get isNetworkSource => gpsSourceMode == "Network";
 
-  PositionOrigin _positionOrigin = PositionOrigin.none;
+  bool get usesReceiverTraffic => trafficSourceMode != "Internet";
+  bool get usesNetworkTraffic => trafficSourceMode != "Receiver";
 
-  /// Where the position now in [position] came from. Reported rather than
-  /// assumed, so a label can never claim a source that is not actually driving
-  /// the aircraft symbol.
+  /// The feed runs if either position or traffic wants it.
+  bool get needsNetworkFeed => isNetworkSource || usesNetworkTraffic;
+
+  PositionOrigin _positionOrigin = PositionOrigin.none;
+  int _positionOriginMs = 0;
+  String _positionOriginDetail = ""; // tail number or callsign, where there is one
+
+  /// Who last wrote [position]. Sticky on purpose: when the selected source
+  /// stops supplying one, the position on screen still belongs to whoever put
+  /// it there, and saying so is the only way to explain why the aircraft symbol
+  /// has stopped moving.
   PositionOrigin get positionOrigin => _positionOrigin;
+
+  /// When [position] was last written, by anyone. Exposed for the audible alert
+  /// de-duplication, which needs a clock that actually advances with the fix.
+  int get lastPositionUpdateMs => _positionOriginMs;
+
+  /// A position is only worth acting on if it came from the source now selected
+  /// and arrived recently enough to still be true.
+  bool get positionIsLive =>
+      _positionOrigin != PositionOrigin.none &&
+      acceptsPositionFrom(_positionOrigin) &&
+      (DateTime.now().millisecondsSinceEpoch - _positionOriginMs) <= 2 * gpsSwitchoverTimeMs;
+
+  /// Record an accepted position write. One place, so provenance and its
+  /// timestamp can never disagree.
+  void _recordPosition(PositionOrigin origin, {String detail = ""}) {
+    _positionOrigin = origin;
+    _positionOriginMs = DateTime.now().millisecondsSinceEpoch;
+    if (detail.isNotEmpty) {
+      _positionOriginDetail = detail;
+    }
+  }
 
   /// The one place that decides whether a position from [origin] may be used.
   /// All three writers -- this device's GPS, the receiver's ownship reports and
@@ -219,24 +264,30 @@ class Storage {
     }
   }
 
-  /// Start or stop the network feed to match the selected source, and drop any
-  /// traffic the previous source left behind -- those targets stop updating the
-  /// moment the source changes, so they would otherwise sit on the map as
-  /// ghosts until they aged out.
-  void applyPositionSource() {
+  /// Whether a traffic report from this source may be shown.
+  bool acceptsTrafficFrom(TrafficSource source) =>
+      source == TrafficSource.receiver ? usesReceiverTraffic : usesNetworkTraffic;
+
+  /// Start or stop the network feed to match the selection, and drop traffic the
+  /// previous selection left behind -- those targets stop updating the moment
+  /// the source changes, so they would otherwise sit on the map as ghosts until
+  /// they aged out.
+  ///
+  /// [_positionOrigin] deliberately survives: the position on screen is still
+  /// whoever's it was, and [positionIsLive] already reports it as no longer
+  /// current because the new selection does not accept that origin.
+  void applySourceModes() {
     trafficCache.clear();
-    ownshipMessageIcao = 0;
-    ownshipMessageCallsign = "";
-    // The position on screen is now whatever the old source last left there.
-    // Disown it, so nothing reports a fix from a source that is no longer
-    // running until the new one actually produces one. Age the signal clocks
-    // with it: they were last touched by the source we just left, and leaving
+    if (!isNetworkSource) {
+      ownshipMessageIcao = 0;
+      ownshipMessageCallsign = "";
+    }
+    // The signal clocks were last touched by the source we just left; leaving
     // them fresh made the new source look like it already had a lock.
-    _positionOrigin = PositionOrigin.none;
     final int stale = DateTime.now().millisecondsSinceEpoch - 2 * gpsSwitchoverTimeMs - 1;
     _lastMsGpsSignal = stale;
     _lastMsExternalSignal = stale;
-    if (isNetworkSource) {
+    if (needsNetworkFeed) {
       NetworkTraffic().start();
     }
     else {
@@ -246,13 +297,14 @@ class Storage {
 
   /// Stop pretending to be whatever aircraft was adopted from the feed. The
   /// position on screen belongs to that aircraft, so it must not keep flying
-  /// under a tail number the user has since changed.
+  /// under a tail number the user has since changed. The origin stays, so the
+  /// stale position can still be attributed to the aircraft it came from.
   void clearNetworkOwnship() {
-    if (_positionOrigin == PositionOrigin.network) {
-      _positionOrigin = PositionOrigin.none;
-    }
     ownshipMessageIcao = 0;
     ownshipMessageCallsign = "";
+    if (_positionOrigin == PositionOrigin.network) {
+      _positionOriginMs = 0; // no longer current, whatever its age said
+    }
     NetworkTraffic().lastOwnshipAgeS = -1;
   }
 
@@ -260,7 +312,14 @@ class Storage {
     int index = (_gpsSourceModes.indexOf(gpsSourceMode) + 1) % _gpsSourceModes.length;
     gpsSourceMode = _gpsSourceModes[index];
     settings.setGpsSourceMode(gpsSourceMode);
-    applyPositionSource();
+    applySourceModes();
+  }
+
+  void cycleTrafficSourceMode() {
+    int index = (_trafficSourceModes.indexOf(trafficSourceMode) + 1) % _trafficSourceModes.length;
+    trafficSourceMode = _trafficSourceModes[index];
+    settings.setTrafficSourceMode(trafficSourceMode);
+    applySourceModes();
   }
 
   bool isRollReversed = false;
@@ -315,8 +374,7 @@ class Storage {
       if (!NetworkTraffic().healthy) {
         return GpsState.networkNoData;
       }
-      return (_positionOrigin == PositionOrigin.network &&
-              !Gps.isPositionCloseToZero(position))
+      return (_positionOrigin == PositionOrigin.network && positionIsLive)
           ? GpsState.networkFix
           : GpsState.networkNoOwnship;
     }
@@ -346,55 +404,187 @@ class Storage {
     return GpsState.internalFix;
   }
 
-  /// Three-state answer for the instrument tile: do I have a position, and if
-  /// not, what kind of not. Which source it came from is carried by the tile's
-  /// colour, so the text never has to say it.
+  /// There is a position on the map, but it is not current and nothing selected
+  /// is refreshing it. This is the state that used to be invisible: the aircraft
+  /// symbol sat at the last fix looking exactly like a live one.
+  bool get positionIsFrozen =>
+      _positionOrigin != PositionOrigin.none &&
+      !positionIsLive &&
+      !Gps.isPositionCloseToZero(position);
+
+  /// Name of the source that put the current position on screen, in a form that
+  /// reads inside a sentence.
+  String get positionOriginLabel {
+    switch (_positionOrigin) {
+      case PositionOrigin.none:
+        return "nothing yet";
+      case PositionOrigin.internal:
+        return "this device's GPS";
+      case PositionOrigin.external:
+        return _positionOriginDetail.isEmpty
+            ? "the ADS-B receiver"
+            : "the ADS-B receiver ($_positionOriginDetail)";
+      case PositionOrigin.network:
+        return _positionOriginDetail.isEmpty
+            ? "the internet feed"
+            : "the internet feed, as $_positionOriginDetail";
+    }
+  }
+
+  /// What the user asked for, as opposed to what they are getting.
+  String get positionSourceLabel {
+    switch (gpsSourceMode) {
+      case "Internal": return "This device's GPS";
+      case "External": return "ADS-B receiver";
+      case "Network":  return "Internet feed";
+      default:         return "Automatic";
+    }
+  }
+
+  String get trafficSourceLabel {
+    switch (trafficSourceMode) {
+      case "Internet": return "Internet feed";
+      case "Both":     return "Receiver + internet";
+      default:         return "ADS-B receiver";
+    }
+  }
+
+  /// How long ago, in words. Used wherever an age is reported so they all read
+  /// the same way.
+  static String describeAge(int ms) {
+    final int s = ms ~/ 1000;
+    if (s < 2)    return "just now";
+    if (s < 90)   return "$s s ago";
+    if (s < 5400) return "${(s / 60).round()} min ago";
+    return "${(s / 3600).round()} h ago";
+  }
+
+  /// The one sentence about position provenance. Every surface quotes this, so
+  /// none of them can word it differently or get it wrong on its own.
+  String get positionProvenanceMessage {
+    if (positionIsLive) {
+      return "Position from $positionOriginLabel, "
+          "${describeAge(DateTime.now().millisecondsSinceEpoch - _positionOriginMs)}.";
+    }
+    if (_positionOrigin == PositionOrigin.none ||
+        Gps.isPositionCloseToZero(position)) {
+      return "No position yet. $positionSourceLabel is selected but has not "
+          "supplied one.";
+    }
+    return "FROZEN -- this is the last position from $positionOriginLabel, "
+        "${describeAge(DateTime.now().millisecondsSinceEpoch - _positionOriginMs)}. "
+        "$positionSourceLabel is not supplying one, so the aircraft symbol is "
+        "not moving.";
+  }
+
+  /// Short word for the instrument tile: what is driving the aircraft symbol.
   String get positionTileLabel {
+    if (positionIsFrozen) {
+      return "Frozen";
+    }
     switch (gpsState) {
-      case GpsState.internalFix:
-      case GpsState.externalFix:
-        return "POS";
-      case GpsState.internalSearching:
-      case GpsState.externalNoOwnship:
-        return "NOFIX";
-      case GpsState.externalNoData:
-      case GpsState.noProvider:
-        return "NONE";
+      case GpsState.internalFix:              return "Device";
+      case GpsState.externalFix:              return "ADS-B";
+      case GpsState.internalSearching:        return "Searching";
+      case GpsState.externalNoOwnship:        return "No Fix";
+      case GpsState.externalNoData:           return "No Link";
+      case GpsState.noProvider:               return "No GPS";
       case GpsState.networkFix:
         // Name the aircraft we are pretending to be, so a spoofed position can
         // never be mistaken for our own.
         final String tail = settings.getNetworkOwnshipTail().trim();
-        return tail.isEmpty ? "FEED" : tail.toUpperCase();
-      case GpsState.networkNoOwnship:
-        return "NO A/C";
-      case GpsState.networkNoData:
-        return "NO FEED";
+        return tail.isEmpty ? "Feed" : tail.toUpperCase();
+      case GpsState.networkNoOwnship:         return "No A/C";
+      case GpsState.networkNoData:            return "No Feed";
       case GpsState.internalPermissionDenied:
-      case GpsState.internalServiceOff:
-        return "OFF";
+      case GpsState.internalServiceOff:       return "Off";
     }
   }
 
-  /// Plain-language label for where position is coming from. Used in the
-  /// diagnostics screen, which has room for words rather than abbreviations.
-  String get gpsStateLabel {
-    switch (gpsState) {
-      case GpsState.internalFix:              return "This device";
-      case GpsState.internalSearching:        return "Searching";
-      case GpsState.internalPermissionDenied: return "Access denied";
-      case GpsState.internalServiceOff:       return "Turned off";
-      case GpsState.noProvider:               return "None on this computer";
-      case GpsState.externalFix:              return "ADS-B receiver";
-      case GpsState.externalNoOwnship:        return "Receiver has no fix";
-      case GpsState.externalNoData:           return "No receiver data";
-      case GpsState.networkFix:               return "Internet feed (test)";
-      case GpsState.networkNoOwnship:         return "Internet feed, no aircraft";
-      case GpsState.networkNoData:            return "Internet feed unreachable";
-    }
+  /// Short word for the ADS-B tile: where the targets on the map came from.
+  String get trafficTileLabel {
+    final bool receiver = usesReceiverTraffic && adsbStatus.trafficFresh;
+    final bool feed = usesNetworkTraffic && NetworkTraffic().healthy;
+    if (receiver && feed) return "Both";
+    if (receiver)         return "ADS-B";
+    if (feed)             return "Web";
+    return usesReceiverTraffic && adsbStatus.connected ? "Quiet" : "None";
   }
 
-  /// What each source mode means, in plain language. Shown when the pilot taps
-  /// the SRC tile so the effect of the tap is explicit rather than inferred.
+  // ---------------------------------------------------------------------------
+  // Per-candidate health. Each source describes itself once; the diagnostics
+  // screen lists them all and marks the selected one, so no two rows can give
+  // conflicting accounts of the same hardware.
+  // ---------------------------------------------------------------------------
+
+  /// This device's own location provider, whether or not it is selected.
+  (String, SourceHealth) get deviceGpsHealth {
+    if (gpsNoProvider)   return ("no location provider on this computer", SourceHealth.absent);
+    if (gpsNotPermitted) return ("location access denied", SourceHealth.failed);
+    if (gpsDisabled)     return ("location services turned off", SourceHealth.failed);
+    if (!acceptsPositionFrom(PositionOrigin.internal)) {
+      return ("present, not selected", SourceHealth.idle);
+    }
+    if (_positionOrigin == PositionOrigin.internal && positionIsLive) {
+      return ("fix", SourceHealth.ok);
+    }
+    return ("no fix yet", SourceHealth.degraded);
+  }
+
+  /// The receiver's own GPS, as a position candidate. Its link health is a
+  /// separate question, reported under the receiver section.
+  (String, SourceHealth) get receiverPositionHealth {
+    if (!adsbStatus.connected) return ("no data from receiver", SourceHealth.absent);
+    if (adsbStatus.typeCount(0x0A) == 0) {
+      return ("connected, no ownship report", SourceHealth.degraded);
+    }
+    if (!adsbStatus.ownshipFresh) {
+      return ("ownship report ${describeAge(adsbStatus.secondsSinceOwnship * 1000)}",
+          SourceHealth.degraded);
+    }
+    final String tail = ownshipMessageCallsign.trim();
+    return ("fix${tail.isEmpty ? "" : ", $tail"}, ${adsbStatus.secondsSinceOwnship} s ago",
+        SourceHealth.ok);
+  }
+
+  /// The internet feed, as a position candidate.
+  (String, SourceHealth) get feedPositionHealth {
+    if (!NetworkTraffic().running) return ("not running", SourceHealth.idle);
+    if (!NetworkTraffic().healthy) {
+      return ("unreachable: ${NetworkTraffic().lastError ?? "no response"}",
+          SourceHealth.failed);
+    }
+    final String tail = settings.getNetworkOwnshipTail().trim().toUpperCase();
+    if (tail.isEmpty) return ("no aircraft adopted", SourceHealth.degraded);
+    if (_positionOrigin == PositionOrigin.network && positionIsLive) {
+      return ("flying as $tail", SourceHealth.ok);
+    }
+    return ("$tail not currently in the feed", SourceHealth.degraded);
+  }
+
+  /// The receiver, as a traffic candidate.
+  (String, SourceHealth) get receiverTrafficHealth {
+    if (!usesReceiverTraffic)  return ("not selected", SourceHealth.idle);
+    if (!adsbStatus.connected) return ("no data from receiver", SourceHealth.absent);
+    if (adsbStatus.trafficMessageCount == 0) {
+      return ("connected, no targets heard", SourceHealth.degraded);
+    }
+    return ("${adsbStatus.trafficMessageCount} reports, ${adsbStatus.secondsSinceTraffic} s ago",
+        adsbStatus.trafficFresh ? SourceHealth.ok : SourceHealth.degraded);
+  }
+
+  /// The internet feed, as a traffic candidate.
+  (String, SourceHealth) get feedTrafficHealth {
+    if (!usesNetworkTraffic)       return ("not selected", SourceHealth.idle);
+    if (!NetworkTraffic().running) return ("not running", SourceHealth.idle);
+    if (!NetworkTraffic().healthy) {
+      return ("unreachable: ${NetworkTraffic().lastError ?? "no response"}",
+          SourceHealth.failed);
+    }
+    return ("${NetworkTraffic().lastAircraftCount} aircraft in range", SourceHealth.ok);
+  }
+
+  /// What each position source mode does, in plain language.
   String get gpsSourceModeDescription {
     switch (gpsSourceMode) {
       case "Internal":
@@ -402,43 +592,26 @@ class Storage {
       case "External":
         return "Use only the ADS-B receiver's position. This device's own GPS is ignored.";
       case "Network":
-        return "Test mode. Traffic comes from an internet ADS-B feed, and position is synthesised by adopting a tail number. The receiver and this device's GPS are both ignored. Not for navigation.";
+        return "Test only. Position is synthesised from an internet feed by adopting a tail number, with seconds of latency. Not for navigation.";
       default:
         return "Use the ADS-B receiver's position when it has one, otherwise fall back to this device's GPS.";
     }
   }
 
-  /// One-line explanation shared by the warnings drawer and diagnostics.
-  String get gpsStateMessage {
-    switch (gpsState) {
-      case GpsState.internalFix:
-        return "Position from this device's own GPS.";
-      case GpsState.internalSearching:
-        return "This device has a GPS but has not acquired a fix. Move to an open area with a clear view of the sky.";
-      case GpsState.internalPermissionDenied:
-        return "Location access is denied for AvareX. Grant it in device settings.";
-      case GpsState.internalServiceOff:
-        return "Location services are turned off on this device. Turn them on in device settings.";
-      case GpsState.noProvider:
-        return "This computer has no GPS or location provider. That cannot be changed here -- use an external GPS or ADS-B receiver. ADS-B traffic and weather still work without a position.";
-      case GpsState.externalFix:
-        return "Position from the external ADS-B/GPS receiver.";
-      case GpsState.externalNoOwnship:
-        return "The ADS-B receiver is connected but is not sending an ownship position, so it likely has no GPS fix of its own. Traffic and weather still work.";
-      case GpsState.externalNoData:
-        return "No data from an external receiver. Check that you are joined to its Wi-Fi network and that it is powered on.";
-      case GpsState.networkFix:
-        return "Position is synthesised from an internet ADS-B feed by adopting a tail number. This is test data with seconds of latency and coverage gaps -- not for navigation.";
-      case GpsState.networkNoOwnship:
-        return "The internet feed is working, but no aircraft has been adopted. Enter the tail number of an aircraft that is currently flying within the feed's coverage.";
-      case GpsState.networkNoData:
-        return "The internet feed is not responding. Check this device's internet connection.";
+  /// What each traffic source mode does, in plain language.
+  String get trafficSourceModeDescription {
+    switch (trafficSourceMode) {
+      case "Internet":
+        return "Show only targets from the internet feed. Wide coverage, but seconds late and dependent on this device having internet.";
+      case "Both":
+        return "Show the receiver's targets, and fill the gaps with the internet feed. Where both report the same aircraft the receiver wins; feed-only targets are drawn hollow.";
+      default:
+        return "Show only what the ADS-B receiver hears. This is the real-time picture.";
     }
   }
 
   /// True when position acquisition is in a state the pilot should know about.
-  bool get gpsNeedsAttention =>
-      gpsState != GpsState.internalFix && gpsState != GpsState.externalFix;
+  bool get gpsNeedsAttention => !positionIsLive;
   final List<String> _exceptions = [];
 
   // for navigation on tabs
@@ -500,7 +673,7 @@ class Storage {
             }
             _lastMsGpsSignal = DateTime.now().millisecondsSinceEpoch; // update time when GPS signal was last received
             _lastMsExternalSignal = _lastMsGpsSignal; // start ignoring internal GPS
-            _positionOrigin = PositionOrigin.external;
+            _recordPosition(PositionOrigin.external, detail: m.callSign);
             _gpsStack.push(p);
             // Record additional ownship settings for audible alerts (among other interested parties)--or perhaps these can just reside here in Storage?
             vSpeed = m.verticalSpeed;
@@ -545,7 +718,7 @@ class Storage {
             _lastMsExternalSignal = _lastMsGpsSignal; // start ignoring internal GPS
             vSpeed = m0.verticalSpeed;
             airborne = m0.altitude > 100;
-            _positionOrigin = PositionOrigin.external;
+            _recordPosition(PositionOrigin.external);
             _gpsStack.push(p);
             tracks.add(p);
           }
@@ -582,7 +755,8 @@ class Storage {
     }
     _lastMsGpsSignal = DateTime.now().millisecondsSinceEpoch;
     _lastMsExternalSignal = _lastMsGpsSignal;
-    _positionOrigin = PositionOrigin.network;
+    _recordPosition(PositionOrigin.network, detail: callSign.isEmpty
+        ? settings.getNetworkOwnshipTail().trim().toUpperCase() : callSign);
     _gpsStack.push(p);
     vSpeed = vspeedFpm;
     airborne = isAirborne;
@@ -608,7 +782,7 @@ class Storage {
         return; // skip 0, 0 when GPS is not locked
       }
       _lastMsGpsSignal = DateTime.now().millisecondsSinceEpoch; // update time when GPS signal was last received
-      _positionOrigin = PositionOrigin.internal;
+      _recordPosition(PositionOrigin.internal);
       _gpsStack.push(data);
       tracks.add(data);
     });
@@ -695,10 +869,10 @@ class Storage {
     DbGeneral.set(); // set database platform
 
     await settings.initSettings();
-    // trafficCache must exist first: initGpsSourceMode() applies the position
+    // trafficCache must exist first: initSourceModes() applies the selection,
     // source, which clears traffic, and this is a late field.
     trafficCache = TrafficCache(settings.getTrafficAltitudeFilter());
-    initGpsSourceMode();
+    initSourceModes();
     themeNotifier = ValueNotifier<ThemeData>(Storage().settings.isLightMode() ? ThemeData.light() : ThemeData.dark());
     units = UnitConversion(settings.getUnits());
     flightTimer = FlightTimer(true, 0, timeChange);

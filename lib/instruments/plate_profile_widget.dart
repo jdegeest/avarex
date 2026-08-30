@@ -71,7 +71,10 @@ class PlateProfileWidgetState extends State<PlateProfileWidget> {
     final Color background = Theme.of(context).scaffoldBackgroundColor.withValues(alpha: 0.8);
     final Color textColor = Theme.of(context).colorScheme.onSurface;
     final Color axisColor = Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.4);
-    final Color planeColor = Constants.planeColor.withValues(alpha: 0.9);
+    // Greyed when the position is not current, matching the map and plate.
+    final Color planeColor = Storage().positionIsLive
+        ? Constants.planeColor.withValues(alpha: 0.9)
+        : const Color(0x809E9E9E);
 
     return Container(
       width: width,

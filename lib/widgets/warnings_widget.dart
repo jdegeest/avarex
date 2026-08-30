@@ -37,15 +37,15 @@ class WarningsButtonWidgetState extends State<WarningsButtonWidget> {
 }
 
 class WarningsWidget extends StatefulWidget {
-  const WarningsWidget({super.key, required this.gpsNotPermitted,
-    required this.gpsDisabled, required this.chartsMissing, required this.dataExpired, required this.signed, required this.gpsNoLock, required this.exceptions});
+  // The GPS flags this used to take are read straight from Storage() in
+  // build(), because they change while the drawer is open. They were still
+  // being passed in and ignored.
+  const WarningsWidget({super.key, required this.chartsMissing,
+    required this.dataExpired, required this.signed, required this.exceptions});
 
-  final bool gpsNotPermitted;
-  final bool gpsDisabled;
   final bool chartsMissing;
   final bool dataExpired;
   final bool signed;
-  final bool gpsNoLock;
   final List<String> exceptions;
 
   @override
@@ -90,7 +90,7 @@ class WarningsWidgetState extends State<WarningsWidget> {
       list.add(ListTile(
           title: Text(title),
           leading: Icon(icon),
-          subtitle: Text(Storage().gpsStateMessage),
+          subtitle: Text(Storage().positionProvenanceMessage),
           dense: true,
           onTap: !actionable ? null : () {
             try {
