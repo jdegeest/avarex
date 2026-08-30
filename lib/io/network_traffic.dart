@@ -137,8 +137,12 @@ class NetworkTraffic {
   }
 
   void _ingest(List<dynamic> list) {
-    final String wantTail =
-        Storage().settings.getNetworkOwnshipTail().trim().toUpperCase();
+    // A tail number only adopts an aircraft while the feed is the selected
+    // position source. With the feed supplying traffic alone, that aircraft is
+    // just another target and must stay on the map.
+    final String wantTail = Storage().isNetworkSource
+        ? Storage().settings.getNetworkOwnshipTail().trim().toUpperCase()
+        : "";
     int count = 0;
     for (final dynamic raw in list) {
       if (raw is! Map<String, dynamic>) {
