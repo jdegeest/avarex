@@ -67,15 +67,6 @@ class MapScreenState extends State<MapScreen> {
   int _maxZoom = ChartCategory.chartTypeToZoom(Storage().settings.getChartType());
   final MapController _controller = MapController();
   // get layers and states from settings
-  bool _isFullScreen = Storage().settings.getFullScreen();
-
-  Future<void> _toggleFullScreen() async {
-    final bool next = await FullScreen.set(!_isFullScreen);
-    setState(() {
-      _isFullScreen = next;
-    });
-  }
-
   final List<String> _layers = Storage().settings.getLayers();
   final List<double> _layersOpacity = Storage().settings.getLayersOpacity();
   final List<String> _weatherProducts = Storage().settings.getWeatherProducts();
@@ -1684,11 +1675,14 @@ class MapScreenState extends State<MapScreen> {
                                   ),
 
                                   if (FullScreen.supported)
-                                    IconButton(
-                                      tooltip: _isFullScreen ? "Leave full screen" : "Enter full screen",
-                                      icon: CircleAvatar(radius: iconRadius, backgroundColor: Theme.of(context).scaffoldBackgroundColor.withValues(alpha: 0.7),
-                                          child: Icon(_isFullScreen ? Icons.fullscreen_exit : Icons.fullscreen)),
-                                      onPressed: _toggleFullScreen,
+                                    ValueListenableBuilder<bool>(
+                                      valueListenable: FullScreen.state,
+                                      builder: (context, on, _) => IconButton(
+                                        tooltip: on ? "Leave full screen" : "Enter full screen",
+                                        icon: CircleAvatar(radius: iconRadius, backgroundColor: Theme.of(context).scaffoldBackgroundColor.withValues(alpha: 0.7),
+                                            child: Icon(on ? Icons.fullscreen_exit : Icons.fullscreen)),
+                                        onPressed: () => FullScreen.set(!on),
+                                      ),
                                     ),
                                 ]
                               ),

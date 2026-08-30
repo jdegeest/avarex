@@ -1,9 +1,12 @@
+import 'package:flutter/foundation.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../constants.dart';
 import '../storage.dart';
 
 class FullScreen {
+  static final ValueNotifier<bool> state = ValueNotifier<bool>(false);
+
   static bool get supported => Constants.supportsWindowManagement;
 
   static Future<void> applySaved() async {
@@ -12,25 +15,24 @@ class FullScreen {
     }
     try {
       await windowManager.ensureInitialized();
-      await windowManager.setFullScreen(Storage().settings.getFullScreen());
+      await set(Storage().settings.getFullScreen());
     }
     catch (e) {
       Storage().setException("Full screen failed: $e");
     }
   }
 
-  static Future<bool> set(bool on) async {
+  static Future<void> set(bool on) async {
     if (!supported) {
-      return false;
+      return;
     }
     try {
       await windowManager.setFullScreen(on);
       Storage().settings.setFullScreen(on);
-      return on;
+      state.value = on;
     }
     catch (e) {
       Storage().setException("Full screen failed: $e");
-      return Storage().settings.getFullScreen();
     }
   }
 }

@@ -62,6 +62,7 @@ You can reopen onboarding later from the drawer header icon.
 | Avidyne IFD ADS-B traffic & weather (Capstone GDL90 over Wi-Fi)                                  | All supported platforms |
 | Pro Services (Flight Intelligence + Backup/Sync + Community + Aircraft Scheduler )               | **iOS and Android only** |
 | Airport Businesses & Reviews (free, sign-in required)                                            | **iOS and Android only** |
+| Full screen toggle                                                                               | **Desktop only** (Linux, macOS, Windows) |
 | PDF viewing in Documents/Help                                                                    | Not available on Linux |
 | File sharing from Documents/Logbook export                                                       | Not available on Linux |
 
@@ -139,6 +140,7 @@ The **instrument tiles** float as a movable overlay over the map (GS, ALT, MT, P
 - **Notes icon**: opens handwriting Notes screen.
 - **Chart type popup**: selects chart source type.
 - **Layers popup**: per-layer on/off via opacity slider; also holds the Traffic altitude filter.
+- **Full screen toggle** (desktop only): switches the app window between full screen and windowed. The choice is remembered for the next launch.
 
 #### Top-left
 - **Instrument tiles menu** (arrow dropdown): tile sizing, lock/reset layout, and show/hide individual instrument tiles (including the `ADSB` tile).
