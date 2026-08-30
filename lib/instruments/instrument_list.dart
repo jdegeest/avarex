@@ -6,6 +6,7 @@ import 'package:avaremp/gdl90/adsb_status_screen.dart';
 import 'package:avaremp/utils/geo_calculations.dart';
 import 'package:avaremp/instruments/pfd_painter.dart';
 import 'package:avaremp/plan/plan_route.dart';
+import 'package:avaremp/io/network_traffic.dart';
 import 'package:avaremp/storage.dart';
 import 'package:avaremp/plan/waypoint.dart';
 import 'package:avaremp/utils/toast.dart';
@@ -23,6 +24,9 @@ import '../io/gps.dart';
 /// lays out: a top or bottom strip flows wide with many columns, a side strip
 /// runs tall with one or two.
 enum PanelDock { free, top, bottom, left, right }
+
+/// What a source readout's colour means, on every tile that has one.
+enum _Severity { ok, delayed, attention, failed, idle }
 
 class InstrumentList extends StatefulWidget {
   const InstrumentList({super.key});
@@ -622,34 +626,50 @@ class InstrumentListState extends State<InstrumentList> {
 
   /// Only tiles that genuinely encode state get a colour; everything else uses
   /// the normal foreground so the panel reads as one table, not a paint chart.
+  /// How well a readout is doing. Colour on these tiles means severity and
+  /// nothing else, so the same word cannot appear in two colours: the position
+  /// tile used to colour by *source* (receiver blue, device green) while the
+  /// traffic tile coloured by health, which drew "ADS-B" blue on one and green
+  /// on the other for the same working receiver. The value text already names
+  /// the source, so colour is free to answer "is this all right".
+  static Color? _severityColor(_Severity s) {
+    switch (s) {
+      case _Severity.ok:        return Colors.lightGreenAccent;
+      case _Severity.delayed:   return Colors.orangeAccent;
+      case _Severity.attention: return Colors.amberAccent;
+      case _Severity.failed:    return Colors.redAccent;
+      case _Severity.idle:      return null; // normal foreground
+    }
+  }
+
   Color? _stateColorFor(String code) {
     switch (code) {
       case "SRC":
-        // Text says whether we have a position; colour says where it came
-        // from, so a silent Auto fallback from receiver to this device shows
-        // up as a blue -> green change with no label to read.
-        return switch (Storage().gpsState) {
-          GpsState.externalFix => Colors.lightBlueAccent,
-          GpsState.internalFix => Colors.lightGreenAccent,
-          // Orange matches the test banner, so a spoofed position reads as
-          // test data everywhere it appears.
-          GpsState.networkFix => Colors.orangeAccent,
-          GpsState.networkNoOwnship ||
-          GpsState.networkNoData => Colors.orange,
-          GpsState.internalPermissionDenied ||
-          GpsState.internalServiceOff => Colors.redAccent,
-          GpsState.noProvider => null,
-          _ => Colors.amberAccent,
-        };
-      case "ADSB":
-        // Orange wherever the internet feed is involved, matching the position
-        // tile, so "not from my receiver" reads the same on both.
-        if (Storage().usesNetworkTraffic) {
-          return Colors.orangeAccent;
+        if (Storage().positionIsFrozen) {
+          return _severityColor(_Severity.attention);
         }
-        return Storage().adsbStatus.trafficFresh
-            ? Colors.lightGreenAccent
-            : (Storage().adsbStatus.connected ? Colors.amberAccent : null);
+        return _severityColor(switch (Storage().gpsState) {
+          GpsState.externalFix ||
+          GpsState.internalFix => _Severity.ok,
+          // The feed is a working source, but a delayed and synthetic one.
+          GpsState.networkFix => _Severity.delayed,
+          GpsState.internalPermissionDenied ||
+          GpsState.internalServiceOff => _Severity.failed,
+          GpsState.noProvider ||
+          GpsState.externalNoData => _Severity.idle,
+          _ => _Severity.attention,
+        });
+      case "ADSB":
+        if (Storage().usesNetworkTraffic) {
+          // Any feed traffic on the map is delayed traffic, whether or not the
+          // receiver is also contributing.
+          return _severityColor(NetworkTraffic().healthy
+              ? _Severity.delayed : _Severity.attention);
+        }
+        return _severityColor(Storage().adsbStatus.trafficFresh
+            ? _Severity.ok
+            : (Storage().adsbStatus.connected
+                ? _Severity.attention : _Severity.idle));
       case "DNT":
         return Storage().flightDownTimer.isExpired()
             ? Colors.redAccent
