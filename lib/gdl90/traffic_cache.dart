@@ -85,16 +85,16 @@ class Traffic {
             top: _kCircleTop,
             child: CustomPaint(
               painter: TrafficVerticalStatusPainter(this),
-              size: const Size(96, 24),
+              size: const Size(110, 34),
             ),
           ),
           // Callsign / ID text label, sits below the vertical-status label
           Positioned(
             left: _kLabelLeft,
-            top: _kCircleTop + 20,
+            top: _kCircleTop + 34,
             child: CustomPaint(
               painter: TrafficIdPainter(this),
-              size: const Size(140, 24),
+              size: const Size(140, 18),
             ),
           ),
           // Centered Avare-style circle dot at the marker's anchor point
@@ -386,32 +386,38 @@ class TrafficPainter extends AbstractCachedCustomPainter {
 
 /// Painter for traffic vertical status text box (+/- flight level, and vertical speed direction arrows)
 class TrafficVerticalStatusPainter extends AbstractCachedCustomPainter {
-  static const double _vertLocationFontSize = 16, _vertSpeedArrowFontSize = 24;
-  static const _vertLocationTextStyle = TextStyle(shadows: [Shadow(offset: Offset(2, 2))], color: Colors.white, fontWeight: FontWeight.w600, fontSize: _vertLocationFontSize);
-  static const _vertSpeedArrowStyle = TextStyle(shadows: [Shadow(offset: Offset(2, 2))], color: Colors.white, fontWeight: FontWeight.w900, fontSize: _vertSpeedArrowFontSize);
-  static final _boundingBoxPaint = Paint()..color = const Color.fromRGBO(0, 0, 0, .2);
-  static const double _offsetX = 0, _offsetY = 0;
-  static const double _charPixeslWidth = 10;
+  static const double _relFontSize = 14, _altFontSize = 11;
+  // No drop shadows: the translucent plate behind the text provides contrast,
+  // and an offset shadow on small glyphs just reads as blur.
+  static const _relStyle = TextStyle(color: Colors.white, fontWeight: FontWeight.w700,
+      fontSize: _relFontSize, height: 1.05);
+  static const _altStyle = TextStyle(color: Color(0xFFD8D8D8), fontWeight: FontWeight.w500,
+      fontSize: _altFontSize, height: 1.05);
+  static final _plate = Paint()..color = const Color.fromRGBO(0, 0, 0, 0.45);
 
-  /// Bumped whenever the rendered text format changes so that the static
-  /// in-memory image cache (in [AbstractCachedCustomPainter]) does not return a
-  /// stale rasterization across hot reloads. Increment when the format string,
-  /// fonts, sizes, or layout offsets are changed.
-  static const int _formatVersion = 3;
+  /// Bump when the rendered format changes so the cached rasterization is not
+  /// reused across a format change.
+  static const int _formatVersion = 4;
 
   final int _flightLevelDiff;
   final int _vspeedDirection;
+  final int _pressureAltFt;
   final bool _isAirborne;
 
   TrafficVerticalStatusPainter(Traffic t):
     _flightLevelDiff = getFlightLevelDiff(t),
     _vspeedDirection = TrafficPainter.getVerticalSpeedDirection(t.message.verticalSpeed),
+    _pressureAltFt = (t.message.altitude / 100).round() * 100,
     _isAirborne = t.message.airborne,
-    super([_formatVersion, getFlightLevelDiff(t), TrafficPainter.getVerticalSpeedDirection(t.message.verticalSpeed), t.message.airborne ? 1 : 0], false,
-      const Size(96, 32));
+    // true => draw the recorded picture rather than a rasterized bitmap. The
+    // bitmap path rendered at logical size and was then scaled up on a HiDPI
+    // display, which is what made this text blurry.
+    super([_formatVersion, getFlightLevelDiff(t),
+           TrafficPainter.getVerticalSpeedDirection(t.message.verticalSpeed),
+           (t.message.altitude / 100).round(), t.message.airborne ? 1 : 0], true,
+      const Size(110, 34));
 
-  /// Format a flight-level diff as a signed, zero-padded 3-digit string.
-  /// Examples: 60 -> "+060", -60 -> "-060", 6 -> "+006", 0 -> "000", 100 -> "+100", -1234 -> "-1234".
+  /// Signed, zero-padded hundreds of feet relative to ownship: 60 -> "+060".
   static String formatFlightLevelDiff(int flightLevelDiff) {
     final int absVal = flightLevelDiff.abs();
     final String absStr = absVal < 100 ? absVal.toString().padLeft(3, '0') : absVal.toString();
@@ -423,53 +429,62 @@ class TrafficVerticalStatusPainter extends AbstractCachedCustomPainter {
     return absStr;
   }
 
+  /// Absolute pressure altitude with a thousands separator: 40000 -> "40,000".
+  static String formatAltitude(int ft) {
+    final bool neg = ft < 0;
+    String d = ft.abs().toString();
+    final StringBuffer out = StringBuffer();
+    for (int i = 0; i < d.length; i++) {
+      if (i > 0 && (d.length - i) % 3 == 0) {
+        out.write(',');
+      }
+      out.write(d[i]);
+    }
+    return neg ? '-${out.toString()}' : out.toString();
+  }
+
   @override
   void freshPaint(ui.Canvas canvas) {
     if (!_isAirborne) {
       return;
     }
+    final String arrow = _vspeedDirection > 0 ? " \u2191" : (_vspeedDirection < 0 ? " \u2193" : "");
 
-    final String vertLocationMsg = formatFlightLevelDiff(_flightLevelDiff);
-    final String directionText = (_vspeedDirection > 0 ? "↑" : (_vspeedDirection < 0 ? "↓": ""));
-    // Draw transluscent bounding box for greater visibility (especially sectionals)
-    final ui.Path statusBoundingBox = ui.Path()
-      ..addRRect(RRect.fromRectAndRadius(
-        Rect.fromLTRB(_offsetX, _offsetY, _offsetX+(vertLocationMsg.length+directionText.length)*_charPixeslWidth+_charPixeslWidth, _offsetY+24),
-        const Radius.circular(6)));
-    canvas.drawPath(statusBoundingBox, _boundingBoxPaint);
-    // Paint vertical position. Use unbounded maxWidth so text never wraps and
-    // hides a leading-zero digit (e.g. "+060" being collapsed to "+06" / "+0").
-    final vertLocationTextPainter = TextPainter(text: TextSpan(text: vertLocationMsg, style: _vertLocationTextStyle), textDirection: TextDirection.ltr);
-    vertLocationTextPainter.layout(
-      minWidth: 0,
-      maxWidth: double.infinity,
-    );
-    vertLocationTextPainter.paint(canvas, const Offset(_offsetX, _offsetY));
-    // Paint ascending/descending direction arrows (if not flying level)
-    if (directionText.isNotEmpty) {
-      final verticalSpeedTextPainter = TextPainter(text: TextSpan(text: directionText, style: _vertSpeedArrowStyle), textDirection: TextDirection.ltr);
-      verticalSpeedTextPainter.layout(
-        minWidth: 0,
-        maxWidth: double.infinity,
-      );
-      verticalSpeedTextPainter.paint(canvas, Offset(_offsetX + vertLocationTextPainter.width + 2, _offsetY-(_vertSpeedArrowFontSize-_vertLocationFontSize)));
-    }
+    // One painter for both lines, so the plate can be sized from measured text
+    // instead of a characters-times-ten guess that never lined up.
+    final TextPainter tp = TextPainter(
+      text: TextSpan(children: [
+        TextSpan(text: "${formatFlightLevelDiff(_flightLevelDiff)}$arrow\n", style: _relStyle),
+        TextSpan(text: formatAltitude(_pressureAltFt), style: _altStyle),
+      ]),
+      textDirection: TextDirection.ltr,
+      maxLines: 2,
+    )..layout();
+
+    const double padX = 4, padY = 2;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(0, 0, tp.width + padX * 2, tp.height + padY * 2),
+        const Radius.circular(4)),
+      _plate);
+    // Everything is drawn inside the canvas; the arrow used to be painted at a
+    // negative y and was clipped off the top.
+    tp.paint(canvas, const Offset(padX, padY));
   }
 
-  /// get flight level
+  /// Hundreds of feet of ownship-relative altitude, positive when above.
   @pragma("vm:prefer-inline")
   static int getFlightLevelDiff(final Traffic traffic) {
     return -(traffic.verticalOwnshipDistanceFt / 100).round();
   }
 }
 
-/// Painter for traffic identifier (N-number if in ADSB message, ICAO number if not)
 class TrafficIdPainter extends AbstractCachedCustomPainter {
-  static const double _trafficIdFontSize = 16;
-  static final _boundingBoxPaint = Paint()..color = const Color.fromRGBO(0, 0, 0, .2);
-  static const _trafficIdTextStyle = TextStyle(shadows: [Shadow(offset: Offset(2, 2))], color: Colors.white, fontWeight: FontWeight.w600, fontSize: _trafficIdFontSize);
+  static const double _trafficIdFontSize = 12;
+  static final _boundingBoxPaint = Paint()..color = const Color.fromRGBO(0, 0, 0, 0.45);
+  static const _trafficIdTextStyle = TextStyle(color: Colors.white,
+      fontWeight: FontWeight.w600, fontSize: _trafficIdFontSize, height: 1.05);
   static const double _offsetX = 0, _offsetY = 0;
-  static const double _charPixeslWidth = 12;
 
   final String _trafficId;
   final bool _isAirborne;
@@ -478,26 +493,29 @@ class TrafficIdPainter extends AbstractCachedCustomPainter {
     _trafficId = t.message.callSign.isNotEmpty ? t.message.callSign : t.message.icao.toString(),
     _isAirborne = t.message.airborne,
     super([ (t.message.callSign.isNotEmpty ? t.message.callSign : t.message.icao.toString()).hashCode, t.message.airborne ? 1 : 0 ], 
-      false, Size((t.message.callSign.isNotEmpty ? t.message.callSign : t.message.icao.toString()).length*_charPixeslWidth+24, 42));
+      // true => draw the picture, not a bitmap scaled up on a HiDPI display
+      true, const Size(140, 18));
     
   @override
   void freshPaint(ui.Canvas canvas) {
     if (!_isAirborne) { // Don't clutter UI with ID's of aircraft on the ground--airports would be a mess
       return;
     }
-    // paint transluscent bounding box
-    final ui.Path statusBoundingBox = ui.Path()
-      ..addRRect(RRect.fromRectAndRadius(
-        Rect.fromLTRB(_offsetX, _offsetY, _offsetX+(_trafficId.length)*_charPixeslWidth+_charPixeslWidth, _offsetY+32),
-        const Radius.circular(6)));
-    canvas.drawPath(statusBoundingBox, _boundingBoxPaint);
-    // paint traffic ID
-    final trafficIdTextPainter = TextPainter(text: TextSpan(text: _trafficId, style: _trafficIdTextStyle), textDirection: TextDirection.ltr);
-    trafficIdTextPainter.layout(
-      minWidth: 0,
-      maxWidth: _trafficId.length*_charPixeslWidth,
-    );    
-    trafficIdTextPainter.paint(canvas, const Offset(_offsetX, _offsetY));    
+    // Measure first, then size the plate to the text -- the old box was sized
+    // from a characters-times-twelve guess and never matched the glyphs.
+    final trafficIdTextPainter = TextPainter(
+      text: TextSpan(text: _trafficId, style: _trafficIdTextStyle),
+      textDirection: TextDirection.ltr,
+      maxLines: 1,
+    )..layout();
+    const double padX = 4, padY = 2;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(_offsetX, _offsetY,
+            trafficIdTextPainter.width + padX * 2, trafficIdTextPainter.height + padY * 2),
+        const Radius.circular(4)),
+      _boundingBoxPaint);
+    trafficIdTextPainter.paint(canvas, const Offset(_offsetX + padX, _offsetY + padY));
   }
 }
 
