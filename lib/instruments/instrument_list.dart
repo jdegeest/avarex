@@ -1,4 +1,5 @@
 import 'dart:math';
+import 'dart:ui' as ui;
 
 import 'package:avaremp/destination/destination_calculations.dart';
 import 'package:avaremp/gdl90/adsb_status_screen.dart';
@@ -17,6 +18,11 @@ import '../constants.dart';
 import 'package:avaremp/destination/destination.dart';
 import '../io/gps.dart';
 
+
+/// Where the instrument panel sits. The edge it is docked to decides how it
+/// lays out: a top or bottom strip flows wide with many columns, a side strip
+/// runs tall with one or two.
+enum PanelDock { free, top, bottom, left, right }
 
 class InstrumentList extends StatefulWidget {
   const InstrumentList({super.key});
@@ -46,9 +52,54 @@ class InstrumentList extends StatefulWidget {
 class InstrumentListState extends State<InstrumentList> {
   static final DateFormat _hourMinuteFormatter = DateFormat('HH:mm');
   final List<String> _items = Storage().settings.getInstruments().split(","); // get instruments
-  late List<Color> _itemsColors;
-  // Fractional (0..1) top-left position of each tile, keyed by tile code.
-  final Map<String, Offset> _positions = {};
+  // Fractional (0..1) top-left position of the instrument panel as a whole.
+  // Tiles used to each carry their own position and be dragged individually,
+  // which meant rebuilding the layout by hand and let tiles overlap or strand
+  // themselves off-screen. They now flow inside one panel that moves together.
+  Offset _panelPos = const Offset(0.01, 0.01);
+  static const String _panelKey = "__PANEL";
+  static const String _scaleKey = "__SCALE";
+  /// Pinch scales the type; every dimension then follows from the text itself.
+  /// Sizing cells explicitly meant fonts and cells could disagree and clip.
+  double _fontScale = 1.0;
+  double _scaleAtGestureStart = 1.0;
+  static const double _minScale = 0.6, _maxScale = 2.6;
+  /// Where the panel is docked. Layout follows placement: along the top or
+  /// bottom a wide strip with many columns reads well; down a side, one or two
+  /// columns and many rows does. Column count is therefore derived from the
+  /// dock rather than being a separate knob to keep in sync.
+  PanelDock _dock = PanelDock.left;
+  static const String _dockKey = "__DOCK";
+  /// How close to an edge a drag has to end for the panel to snap to it.
+  /// Deliberately tight: you have to genuinely take it to the edge, so a panel
+  /// parked near one side stays floating.
+  static const double _snapFraction = 0.035;
+
+  /// What each tile actually is. The three-letter codes are kept as the stored
+  /// identity (layouts and visibility are saved by code) but are not what the
+  /// pilot should have to read.
+  static const Map<String, String> _tileLabels = {
+    "GS": "Ground Speed", "ALT": "Altitude", "MT": "Track",
+    "PRV": "Previous", "NXT": "Next", "DIS": "Distance", "BRG": "Bearing",
+    "GEL": "Ground Elev", "ETA": "ETA", "ETE": "En Route",
+    "VSR": "VS Required", "UPT": "Up Timer", "DNT": "Down Timer",
+    "UTC": "UTC", "SRC": "Position", "FLT": "Flight Time", "ADSB": "ADS-B",
+  };
+
+  String _tileUnit(String code) {
+    final bool imperial = Storage().settings.getUnits() == "Imperial";
+    switch (code) {
+      case "GS":  return imperial ? "mph" : "kt";
+      case "DIS": return imperial ? "sm" : "nm";
+      case "ALT":
+      case "GEL": return "ft";
+      case "MT":
+      case "BRG": return "\u00b0";
+      case "VSR": return "fpm";
+      case "FLT": return "hr";
+      default:    return "";
+    }
+  }
   bool? _loadedPortrait; // orientation whose positions are currently loaded
   // Tiles currently shown, in the order they were added. The rest are hidden
   // and can be added one by one from the menu.
@@ -279,28 +330,8 @@ class InstrumentListState extends State<InstrumentList> {
     setState(() {
       _timerUp = _truncate(Storage().flightTimer.getTime().toString().substring(2, 7));
       _timerDown = _truncate(Storage().flightDownTimer.getTime().toString().substring(2, 7));
-      Color defaultColor = Theme.of(context).cardColor.withValues(alpha: 0.6);
-      // DNT: red when expired, green when counting, default otherwise
-      _itemsColors[_items.indexOf("DNT")] = Storage().flightDownTimer.isExpired()
-          ? Colors.red
-          : (Storage().flightDownTimer.isStarted() ? Colors.green : defaultColor);
-      // UPT: green when counting, default otherwise
-      _itemsColors[_items.indexOf("UPT")] = Storage().flightTimer.isStarted() ? Colors.green : defaultColor;
       _utc = _truncate(_hourMinuteFormatter.format(DateTime.now().toUtc()));
       _source = Storage().positionTileLabel;
-      // Colour reflects whether we actually have a position, not which mode is
-      // selected -- a dead GPS used to look identical to a working one.
-      defaultColor = Theme.of(context).cardColor.withValues(alpha: 0.6);
-      // Text says whether we have a position; colour says where it came from,
-      // so a silent Auto fallback from receiver to this device shows up as a
-      // blue -> green change with no label to read.
-      _itemsColors[_items.indexOf("SRC")] = switch (Storage().gpsState) {
-        GpsState.externalFix => Colors.blue,
-        GpsState.internalFix => Colors.green,
-        GpsState.internalPermissionDenied || GpsState.internalServiceOff => Colors.red,
-        GpsState.noProvider => defaultColor,
-        _ => Colors.amber,
-      };
       // ADSB: show the ownship tail number when the receiver reports it;
       // otherwise fall back to a status circle (filled when connected, empty
       // when not). Color reflects the receiver state (green with GPS, yellow
@@ -378,40 +409,13 @@ class InstrumentListState extends State<InstrumentList> {
   }
 
   // tile dimensions, scaled by the user adjustable factor
-  double _tileWidth() {
-    bool portrait = Constants.isPortrait(context);
-    double factor = Storage().settings.getInstrumentScaleFactor();
-    return (portrait ? Constants.screenWidth(context) / 5.7 : Constants.screenWidth(context) / 9.7) / factor;
-  }
-
-  double _tileHeight() {
-    bool portrait = Constants.isPortrait(context);
-    double factor = Storage().settings.getInstrumentScaleFactor();
-    return (portrait ? Constants.screenHeight(context) / 12 : Constants.screenHeight(context) / 8) / factor;
-  }
+  // Cells are rows now (description, value, unit) rather than square pills, so
+  // they are sized in logical pixels and scaled by the pinch factor. The old
+  // menu scale factor still applies as a coarse base.
+  /// The one number that drives the panel. Cell sizes are intrinsic.
+  double get _s => _fontScale / Storage().settings.getInstrumentScaleFactor();
 
   // default layout: a row of tiles near the top that wraps onto new rows
-  Map<String, Offset> _defaultPositions() {
-    double w = Constants.screenWidth(context);
-    double h = Constants.screenHeight(context);
-    double tw = _tileWidth();
-    double th = _tileHeight();
-    const double gap = 4;
-    const double startX = 5;
-    const double startY = 42; // leave room for the corner menu button
-    Map<String, Offset> pos = {};
-    double x = startX;
-    double y = startY;
-    for(String code in _items) {
-      if(x + tw > w) { // wrap to next row
-        x = startX;
-        y += th + gap;
-      }
-      pos[code] = Offset(x / w, y / h);
-      x += tw + gap;
-    }
-    return pos;
-  }
 
   // load saved positions for the current orientation, filling any gaps with defaults
   void _loadPositions() {
@@ -430,19 +434,20 @@ class InstrumentListState extends State<InstrumentList> {
         }
       }
     }
-    Map<String, Offset> defaults = _defaultPositions();
-    _positions.clear();
-    for(String code in _items) {
-      _positions[code] = parsed[code] ?? defaults[code] ?? const Offset(0, 0);
-    }
+    // Per-tile entries from the old layout are simply ignored; only the panel
+    // position is read now, defaulting to the top-left corner.
+    _panelPos = parsed[_panelKey] ?? const Offset(0.01, 0.01);
+    _fontScale = (parsed[_scaleKey]?.dx ?? 1.0).clamp(_minScale, _maxScale);
+    final int d = (parsed[_dockKey]?.dx ?? PanelDock.left.index.toDouble()).round();
+    _dock = PanelDock.values[d.clamp(0, PanelDock.values.length - 1)];
     _loadedPortrait = portrait;
   }
 
   void _savePositions() {
     bool portrait = Constants.isPortrait(context);
-    String raw = _positions.entries
-        .map((e) => "${e.key}:${e.value.dx.toStringAsFixed(4)}:${e.value.dy.toStringAsFixed(4)}")
-        .join(",");
+    String raw = "$_panelKey:${_panelPos.dx.toStringAsFixed(4)}:${_panelPos.dy.toStringAsFixed(4)}"
+        ",$_scaleKey:${_fontScale.toStringAsFixed(3)}:0"
+        ",$_dockKey:${_dock.index}:0";
     Storage().settings.setInstrumentPositions(portrait, raw);
   }
 
@@ -478,7 +483,6 @@ class InstrumentListState extends State<InstrumentList> {
       }
       else {
         _visible.add(code);
-        _positions[code] ??= _defaultPositions()[code] ?? const Offset(0, 0);
       }
     });
     _saveVisible();
@@ -490,22 +494,16 @@ class InstrumentListState extends State<InstrumentList> {
       _visible
         ..clear()
         ..addAll(_defaultVisible());
-      _positions
-        ..clear()
-        ..addAll(_defaultPositions());
+      _panelPos = const Offset(0.01, 0.01);
+      _fontScale = 1.0;
+      _dock = PanelDock.left;
     });
     _saveVisible();
     _savePositions();
   }
 
-  // make a draggable instrument tile
+  // one readout in the panel; it sizes itself to its text
   Widget _makeInstrument(String code) {
-    double width = _tileWidth();
-    double height = _tileHeight();
-    double screenW = Constants.screenWidth(context);
-    double screenH = Constants.screenHeight(context);
-    int index = _items.indexOf(code);
-    Offset frac = _positions[code] ?? const Offset(0, 0);
 
     String value = "";
     Color? valueColor; // override the value text color (used by the ADSB tile)
@@ -577,30 +575,246 @@ class InstrumentListState extends State<InstrumentList> {
         break;
     }
 
+    final Color fg = Theme.of(context).colorScheme.onSurface;
+    final Color? stateColor = _stateColorFor(code);
+    final String unit = _tileUnit(code);
+
+    // No explicit size: the cell is as wide and tall as its text needs, and the
+    // enclosing Table aligns columns to the widest cell in each.
+    return GestureDetector(
+      onTap: cb,
+      behavior: HitTestBehavior.opaque,
+      child: Padding(
+        padding: EdgeInsets.symmetric(horizontal: 7 * _s, vertical: 4 * _s),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              _tileLabels[code] ?? code,
+              maxLines: 1,
+              softWrap: false,
+              style: TextStyle(
+                fontSize: 9.5 * _s,
+                height: 1.0,
+                letterSpacing: 0.4,
+                color: fg.withValues(alpha: 0.6),
+              ),
+            ),
+            SizedBox(height: 2 * _s),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
+              children: [
+                Text(
+                  value.isEmpty ? "\u2014" : value,
+                  maxLines: 1,
+                  softWrap: false,
+                  style: TextStyle(
+                    fontSize: 16 * _s,
+                    height: 1.0,
+                    fontWeight: FontWeight.w600,
+                    fontFeatures: const [ui.FontFeature.tabularFigures()],
+                    color: valueColor ?? stateColor ?? fg,
+                  ),
+                ),
+                if (unit.isNotEmpty)
+                  Padding(
+                    padding: EdgeInsets.only(left: 3 * _s),
+                    child: Text(unit,
+                      style: TextStyle(
+                        fontSize: 9.5 * _s,
+                        color: fg.withValues(alpha: 0.55))),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Only tiles that genuinely encode state get a colour; everything else uses
+  /// the normal foreground so the panel reads as one table, not a paint chart.
+  Color? _stateColorFor(String code) {
+    switch (code) {
+      case "SRC":
+        // Text says whether we have a position; colour says where it came
+        // from, so a silent Auto fallback from receiver to this device shows
+        // up as a blue -> green change with no label to read.
+        return switch (Storage().gpsState) {
+          GpsState.externalFix => Colors.lightBlueAccent,
+          GpsState.internalFix => Colors.lightGreenAccent,
+          // Orange matches the test banner, so a spoofed position reads as
+          // test data everywhere it appears.
+          GpsState.networkFix => Colors.orangeAccent,
+          GpsState.networkNoOwnship ||
+          GpsState.networkNoData => Colors.orange,
+          GpsState.internalPermissionDenied ||
+          GpsState.internalServiceOff => Colors.redAccent,
+          GpsState.noProvider => null,
+          _ => Colors.amberAccent,
+        };
+      case "DNT":
+        return Storage().flightDownTimer.isExpired()
+            ? Colors.redAccent
+            : (Storage().flightDownTimer.isStarted()
+                ? Colors.lightGreenAccent : null);
+      case "UPT":
+        return Storage().flightTimer.isStarted()
+            ? Colors.lightGreenAccent : null;
+      default:
+        return null;
+    }
+  }
+
+  /// All visible tiles as one cohesive, movable panel. Dragging anywhere on the
+  /// panel background moves the whole thing; taps still reach the tiles.
+  /// Width one readout needs at the current type size. Measured rather than
+  /// assumed, so column counts stay right as the font scales.
+  double _measuredCellWidth() {
+    double widest = 0;
+    for (final String code in _visible) {
+      final String label = _tileLabels[code] ?? code;
+      final TextPainter tp = TextPainter(
+        text: TextSpan(text: label,
+            style: TextStyle(fontSize: 9.5 * _s, letterSpacing: 0.4)),
+        textDirection: ui.TextDirection.ltr,
+      )..layout();
+      // value + unit is usually the wider of the two lines; allow for ~7 glyphs
+      final double valueW = 16 * _s * 0.62 * 7 + 24 * _s;
+      widest = max(widest, max(tp.width, valueW));
+    }
+    return widest + 14 * _s;
+  }
+
+  /// Columns implied by where the panel is docked and how much room that edge
+  /// gives it.
+  int _columnsForDock(double screenW, double screenH, double cellW) {
+    switch (_dock) {
+      case PanelDock.top:
+      case PanelDock.bottom:
+        // a wide strip: as many as fit, but never so many it needs one row
+        return max(1, min(_visible.length, (screenW * 0.96 / cellW).floor()));
+      case PanelDock.left:
+      case PanelDock.right:
+        // a tall strip: keep it narrow, two columns only if there is real room
+        return (screenW > cellW * 5 && _visible.length > 8) ? 2 : 1;
+      case PanelDock.free:
+        // Aim for a square block: cols * cellW ~= rows * cellH, with
+        // rows = n / cols, which gives cols = sqrt(n * cellH / cellW).
+        final double cellH = 34.0 * _s;
+        final int n = _visible.length;
+        final int cols = sqrt(n * cellH / cellW).round();
+        return cols.clamp(1, max(1, n));
+    }
+  }
+
+  /// Snap to whichever edge the panel was released nearest, if any.
+  PanelDock _dockForPosition(Offset frac) {
+    final double x = frac.dx, y = frac.dy;
+    final double nearest = [y, 1 - y, x, 1 - x].reduce(min);
+    if (nearest > _snapFraction) {
+      return PanelDock.free;
+    }
+    if (nearest == y) return PanelDock.top;
+    if (nearest == 1 - y) return PanelDock.bottom;
+    if (nearest == x) return PanelDock.left;
+    return PanelDock.right;
+  }
+
+  Widget _makePanel() {
+    final double screenW = Constants.screenWidth(context);
+    final double screenH = Constants.screenHeight(context);
+    final bool locked = Storage().settings.isInstrumentsLocked();
+    final Color surface = Theme.of(context).colorScheme.surface;
+    final Color line = Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.14);
+
+    final double cellW = _measuredCellWidth();
+    final int perRow = _columnsForDock(screenW, screenH, cellW);
+    final int rows = (_visible.length / perRow).ceil();
+
+    final Widget table = Table(
+      defaultColumnWidth: FixedColumnWidth(cellW),
+      defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+      border: TableBorder.symmetric(inside: BorderSide(color: line, width: 1)),
+      children: [
+        for (int r = 0; r < rows; r++)
+          TableRow(children: [
+            for (int c = 0; c < perRow; c++)
+              (r * perRow + c) < _visible.length
+                  ? _makeInstrument(_visible[r * perRow + c])
+                  : const SizedBox.shrink(),
+          ]),
+      ],
+    );
+
+    final Widget panel = DecoratedBox(
+      decoration: BoxDecoration(
+        color: surface.withValues(alpha: 0.86),
+        borderRadius: const BorderRadius.all(Radius.circular(4)),
+        border: Border.all(color: line, width: 1),
+      ),
+      child: ClipRRect(
+        borderRadius: const BorderRadius.all(Radius.circular(4)),
+        child: IntrinsicWidth(child: table),
+      ),
+    );
+
+    // Docked edges pin the relevant axis; only a free panel uses both saved
+    // coordinates.
+    double? left, top, right, bottom;
+    switch (_dock) {
+      case PanelDock.top:
+        top = 0; left = _panelPos.dx * screenW;
+        break;
+      case PanelDock.bottom:
+        bottom = 0; left = _panelPos.dx * screenW;
+        break;
+      case PanelDock.left:
+        left = 0; top = _panelPos.dy * screenH;
+        break;
+      case PanelDock.right:
+        right = 0; top = _panelPos.dy * screenH;
+        break;
+      case PanelDock.free:
+        left = _panelPos.dx * screenW; top = _panelPos.dy * screenH;
+        break;
+    }
+
+    if (locked) {
+      return Positioned(left: left, top: top, right: right, bottom: bottom, child: panel);
+    }
+
+    const double pad = 48;
     return Positioned(
-      left: frac.dx * screenW,
-      top: frac.dy * screenH,
-      width: width,
-      height: height,
+      left: left == null ? null : left - pad,
+      top: top == null ? null : top - pad,
+      right: right == null ? null : right - pad,
+      bottom: bottom == null ? null : bottom - pad,
       child: GestureDetector(
-        onTap: cb,
-        onPanUpdate: Storage().settings.isInstrumentsLocked() ? null : (details) {
-          Offset cur = _positions[code] ?? const Offset(0, 0);
-          double nx = (cur.dx * screenW + details.delta.dx).clamp(0.0, max(0.0, screenW - width));
-          double ny = (cur.dy * screenH + details.delta.dy).clamp(0.0, max(0.0, screenH - height));
+        behavior: HitTestBehavior.opaque,
+        onScaleStart: (_) => _scaleAtGestureStart = _fontScale,
+        onScaleUpdate: (details) {
           setState(() {
-            _positions[code] = Offset(nx / screenW, ny / screenH);
+            if (details.pointerCount > 1) {
+              _fontScale = (_scaleAtGestureStart * details.scale)
+                  .clamp(_minScale, _maxScale);
+            }
+            final double nx = (_panelPos.dx * screenW + details.focalPointDelta.dx)
+                .clamp(0.0, max(0.0, screenW - 40));
+            final double ny = (_panelPos.dy * screenH + details.focalPointDelta.dy)
+                .clamp(0.0, max(0.0, screenH - 40));
+            _panelPos = Offset(nx / screenW, ny / screenH);
+            // Re-dock live so the layout previews where it will land.
+            _dock = _dockForPosition(_panelPos);
           });
         },
-        onPanEnd: Storage().settings.isInstrumentsLocked() ? null : (_) => _savePositions(),
-        child: Container(
-          width: width,
-          decoration: BoxDecoration(borderRadius: const BorderRadius.all(Radius.circular(20)), color: _itemsColors[index]),
-          child: Column(
-            children: [
-              Expanded(flex: 2, child: SizedBox(width: width - 10, child: FittedBox(child: Text(_items[index], style: const TextStyle( ), maxLines: 1,)))),
-              Expanded(flex: 3, child: SizedBox(width: width - 10, child: FittedBox(child: Text(value,         style: TextStyle(color: valueColor), maxLines: 1,)))),
-            ]),
+        onScaleEnd: (_) => _savePositions(),
+        child: Padding(
+          padding: const EdgeInsets.all(pad),
+          child: DottedEditFrame(color: line, child: panel),
         ),
       ),
     );
@@ -671,6 +885,21 @@ class InstrumentListState extends State<InstrumentList> {
               child: _menuRow(Icons.zoom_out, "Contract"),
             ),
             DropdownMenuItem(
+              value: "dock",
+              onTap: () {
+                setState(() {
+                  // cycle through the docks; dragging to an edge does this too
+                  const List<PanelDock> order = [
+                    PanelDock.left, PanelDock.top, PanelDock.right,
+                    PanelDock.bottom, PanelDock.free];
+                  _dock = order[(order.indexOf(_dock) + 1) % order.length];
+                });
+                _savePositions();
+              },
+              child: _menuRow(Icons.dashboard_outlined,
+                  "Dock: ${_dock.name}"),
+            ),
+            DropdownMenuItem(
               value: "lock",
               onTap:() {
                 setState(() {
@@ -678,8 +907,8 @@ class InstrumentListState extends State<InstrumentList> {
                 });
               },
               child: Storage().settings.isInstrumentsLocked()
-                  ? _menuRow(Icons.lock_open, "Unlock Tiles")
-                  : _menuRow(Icons.lock_outline, "Lock Tiles"),
+                  ? _menuRow(Icons.lock_open, "Unlock Panel")
+                  : _menuRow(Icons.lock_outline, "Lock Panel"),
             ),
             DropdownMenuItem(
               value: "3",
@@ -690,7 +919,8 @@ class InstrumentListState extends State<InstrumentList> {
               DropdownMenuItem(
                 value: "toggle-$code",
                 onTap: () => _toggleTile(code),
-                child: _menuRow(_visible.contains(code) ? Icons.remove_circle_outline : Icons.add_circle_outline, code),
+                child: _menuRow(_visible.contains(code) ? Icons.remove_circle_outline : Icons.add_circle_outline,
+                    _tileLabels[code] ?? code),
               ),
           ],
         )
@@ -712,7 +942,6 @@ class InstrumentListState extends State<InstrumentList> {
 
   @override
   Widget build(BuildContext context) {
-    _itemsColors = List.generate(_items.length, (index) => Theme.of(context).cardColor.withValues(alpha: 0.6));
 
     // init everything
     _gpsListener();
@@ -721,7 +950,7 @@ class InstrumentListState extends State<InstrumentList> {
 
     // (re)load tile positions when first built or when orientation changes
     bool portrait = Constants.isPortrait(context);
-    if(_loadedPortrait != portrait || _positions.length != _items.length) {
+    if(_loadedPortrait != portrait) {
       _loadPositions();
     }
     // Always reload the shown-tiles list from settings. The map and plate
@@ -736,10 +965,29 @@ class InstrumentListState extends State<InstrumentList> {
     // and the menu button receive gestures.
     return Stack(
       children: <Widget>[
-        for(final String code in _visible)
-          _makeInstrument(code),
+        _makePanel(),
         _makeMenu(),
       ],
+    );
+  }
+}
+
+
+/// A faint outline shown only while the panel is unlocked, so it is obvious
+/// which area accepts the drag/pinch and how far it extends.
+class DottedEditFrame extends StatelessWidget {
+  final Widget child;
+  final Color color;
+  const DottedEditFrame({super.key, required this.child, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        border: Border.all(color: color, width: 1),
+        borderRadius: const BorderRadius.all(Radius.circular(6)),
+      ),
+      child: child,
     );
   }
 }
