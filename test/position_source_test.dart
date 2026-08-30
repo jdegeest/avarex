@@ -94,4 +94,29 @@ void main() {
       expect(Storage.describeAge(7200000), "2 h ago");
     });
   });
+
+  // Auto permits two sources at once, so "which source may supply a position"
+  // and "which source is supplying it" are different questions. Answering only
+  // the first lit up the receiver and this device simultaneously, which told
+  // you nothing about what you were actually flying on.
+  group('Auto distinguishes eligible from in use', () {
+    test('both are eligible while the receiver is quiet', () {
+      s.gpsSourceMode = "Auto";
+      s.gpsInternal = true; // receiver has been silent past the switchover
+      expect(s.acceptsPositionFrom(PositionOrigin.external), isTrue);
+      expect(s.acceptsPositionFrom(PositionOrigin.internal), isTrue);
+    });
+
+    test('the traffic selection has no say in what may supply a position', () {
+      s.gpsSourceMode = "Auto";
+      s.gpsInternal = false; // receiver is talking, so it owns the position
+      for (final String t in Storage.trafficSourceModes) {
+        s.trafficSourceMode = t;
+        expect(s.acceptsPositionFrom(PositionOrigin.external), isTrue, reason: t);
+        expect(s.acceptsPositionFrom(PositionOrigin.internal), isFalse, reason: t);
+        expect(s.acceptsPositionFrom(PositionOrigin.network), isFalse, reason: t);
+      }
+      s.trafficSourceMode = "Receiver";
+    });
+  });
 }

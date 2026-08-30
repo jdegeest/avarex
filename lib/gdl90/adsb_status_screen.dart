@@ -3,6 +3,7 @@ import 'package:avaremp/gdl90/ground_station_cache.dart';
 import 'package:avaremp/gdl90/stratus_open_mode.dart';
 import 'package:avaremp/gdl90/traffic_report_message.dart';
 import 'package:avaremp/io/gps.dart';
+import 'package:avaremp/io/network_traffic.dart';
 import 'package:avaremp/storage.dart';
 import 'package:avaremp/utils/geo_calculations.dart';
 import 'package:avaremp/utils/toast.dart';
@@ -23,8 +24,8 @@ class AdsbStatusScreen extends StatefulWidget {
 }
 
 class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
-
   final ScrollController _scroll = ScrollController();
+  final ScrollController _statusScroll = ScrollController();
   late final TextEditingController _tailController =
       TextEditingController(text: Storage().settings.getNetworkOwnshipTail());
 
@@ -37,14 +38,13 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
 
   Future<void> _sendStratusOpenMode() async {
     bool ok = await StratusOpenMode.send();
-    if(!mounted) {
+    if (!mounted) {
       return;
     }
-    if(ok) {
+    if (ok) {
       Toast.showToast(context, "Sent Stratus Open ADS-B Mode command",
           const Icon(Icons.check, color: Colors.green), 3);
-    }
-    else {
+    } else {
       Toast.showToast(context, "Failed to send Stratus Open ADS-B Mode command",
           const Icon(Icons.error, color: Colors.red), 4);
     }
@@ -55,64 +55,81 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
     // Leaving the screen pauses the message log so it stops scrolling/updating.
     Storage().adsbStatus.logPaused = true;
     _scroll.dispose();
+    _statusScroll.dispose();
     _tailController.dispose();
     super.dispose();
   }
 
-  Widget _statusTile(IconData icon, String title, String value, Color color) {
-    return Card(
-      child: ListTile(
-        dense: true,
-        leading: Icon(icon, color: color),
-        title: Text(title),
-        trailing: Text(value, style: const TextStyle(fontWeight: FontWeight.bold)),
+  /// One line of status. Deliberately not a Card wrapping a dense ListTile: at
+  /// roughly 56 px each, the three sections could not be on screen together,
+  /// and anything below the fold may as well not exist.
+  Widget _row(IconData icon, String title, Color color,
+      {String value = "", String? mark, bool bold = false, Widget? trailing}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 16),
+          const SizedBox(width: 8),
+          if (mark != null)
+            Text("$mark ", style: TextStyle(color: color, fontSize: 11)),
+          Expanded(
+            child: Text(title,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: bold ? FontWeight.bold : FontWeight.normal)),
+          ),
+          const SizedBox(width: 8),
+          trailing ??
+              Text(value, style: TextStyle(color: color, fontSize: 12)),
+        ],
       ),
     );
   }
+
+  Widget _statusTile(IconData icon, String title, String value, Color color) =>
+      _row(icon, title, color, value: value);
 
   /// One colour rule for every source row, so "working" looks the same whether
   /// it is a GPS chip, a receiver or a web feed.
   Color _healthColor(SourceHealth h) {
     switch (h) {
-      case SourceHealth.absent:   return Colors.grey;
-      case SourceHealth.failed:   return Colors.red;
-      case SourceHealth.idle:     return Colors.grey;
-      case SourceHealth.degraded: return Colors.amber;
-      case SourceHealth.ok:       return Colors.green;
+      case SourceHealth.absent:
+        return Colors.grey;
+      case SourceHealth.failed:
+        return Colors.red;
+      case SourceHealth.idle:
+        return Colors.grey;
+      case SourceHealth.degraded:
+        return Colors.amber;
+      case SourceHealth.ok:
+        return Colors.green;
     }
   }
 
-  /// One candidate source, describing only itself. [selected] marks the one the
-  /// current mode actually draws from -- filled bullet in use, hollow standing
-  /// by -- which is what makes a list of three sources readable at a glance.
-  Widget _candidateTile(IconData icon, String title,
-      (String, SourceHealth) status, bool selected) {
+  /// One candidate source, describing only itself.
+  ///
+  /// Two different facts, because in Auto they are not the same one and showing
+  /// only eligibility lit both the receiver and this device at once, which said
+  /// nothing about which you were actually flying on:
+  ///   [inUse]    -- this is the source driving the map right now. Filled dot.
+  ///   [eligible] -- the mode permits it, so it can take over. Bold.
+  Widget _candidateTile(IconData icon, String title, (String, SourceHealth) status,
+      {required bool eligible, required bool inUse}) {
     final (String text, SourceHealth health) = status;
     final Color color = _healthColor(health);
-    return Card(
-      child: ListTile(
-        dense: true,
-        leading: Icon(icon, color: selected ? color : color.withValues(alpha: 0.45)),
-        title: Row(children: [
-          Text(selected ? "\u25cf  " : "\u25cb  ",
-              style: TextStyle(color: color, fontSize: 12)),
-          Flexible(child: Text(title,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                  fontWeight: selected ? FontWeight.bold : FontWeight.normal))),
-        ]),
-        trailing: Text(text, style: TextStyle(color: color, fontSize: 12)),
-      ),
-    );
+    return _row(icon, title, inUse ? color : color.withValues(alpha: 0.55),
+        value: text, bold: eligible, mark: inUse ? "\u25cf" : "\u25cb");
   }
 
   /// A source selector with every option visible and directly selectable. This
   /// replaced a tile that cycled through the modes and needed a paragraph to
   /// say what the next tap would do; showing the choices says it instead.
-  Widget _modeSelector(List<String> modes, String selected,
-      String Function(String) name, void Function(String) onSelect) {
+  Widget _modeSelector(List<String> modes, String selected, String Function(String) name,
+      void Function(String) onSelect) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 2, 12, 6),
+      padding: const EdgeInsets.fromLTRB(14, 2, 14, 4),
       child: SizedBox(
         width: double.infinity,
         child: SegmentedButton<String>(
@@ -122,8 +139,7 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
           ),
           segments: [
-            for (final String m in modes)
-              ButtonSegment<String>(value: m, label: Text(name(m))),
+            for (final String m in modes) ButtonSegment<String>(value: m, label: Text(name(m))),
           ],
           selected: {selected},
           onSelectionChanged: (s) => setState(() => onSelect(s.first)),
@@ -136,23 +152,23 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
   /// near-duplicate rows.
   Widget _sectionHeader(String title, String subtitle) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
+      padding: const EdgeInsets.fromLTRB(14, 10, 14, 2),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: const TextStyle(
-              fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 1.1)),
-          Text(subtitle, style: TextStyle(
-              fontSize: 11, color: Theme.of(context).colorScheme.outline)),
+          Text(title,
+              style:
+                  const TextStyle(fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 1.1)),
+          Text(subtitle,
+              style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.outline)),
         ],
       ),
     );
   }
 
-  Widget _boolTile(IconData icon, String title, bool value) {
-    return _statusTile(icon, title, value ? "Yes" : "No",
-        value ? Colors.green : Colors.grey);
-  }
+  Widget _boolTile(IconData icon, String title, bool value) =>
+      _row(icon, title, value ? Colors.green : Colors.grey,
+          value: value ? "Yes" : "No");
 
   String _formatTime(DateTime t) {
     String two(int v) => v < 10 ? "0$v" : "$v";
@@ -162,16 +178,16 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
   // Unique color per GDL90 message type. The same colors are used to tint the
   // log rows and to mark each type in the filter list, so the two stay in sync.
   static const Map<int, Color> _typeColors = {
-    0x00: Colors.blueGrey,   // Heartbeat
-    0x07: Colors.teal,       // Uplink (FIS-B)
-    0x0A: Colors.orange,     // Ownship
+    0x00: Colors.blueGrey, // Heartbeat
+    0x07: Colors.teal, // Uplink (FIS-B)
+    0x0A: Colors.orange, // Ownship
     0x0B: Colors.deepOrange, // Ownship geo. altitude
-    0x14: Colors.blue,       // Traffic
-    0x1E: Colors.indigo,     // Basic report
-    0x1F: Colors.cyan,       // Long report
-    0x4C: Colors.green,      // AHRS
-    0x7A: Colors.brown,      // Device
-    0xCC: Colors.purple,     // Roll reverse
+    0x14: Colors.blue, // Traffic
+    0x1E: Colors.indigo, // Basic report
+    0x1F: Colors.cyan, // Long report
+    0x4C: Colors.green, // AHRS
+    0x7A: Colors.brown, // Device
+    0xCC: Colors.purple, // Roll reverse
   };
 
   // Color for a message type; unknown/unlisted types fall back to grey.
@@ -221,10 +237,8 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
   // One ground-station row: identity (TIS-B site / slot), distance+bearing from
   // ownship, position, and how long ago it was last heard.
   Widget _stationTile(GroundStation st, double? dist, double? brg, String unit) {
-    final int agoS =
-        ((DateTime.now().millisecondsSinceEpoch - st.lastSeenMs) / 1000).floor();
-    final String name =
-        st.tisbSiteId > 0 ? "TIS-B site ${st.tisbSiteId}" : "Ground station";
+    final int agoS = ((DateTime.now().millisecondsSinceEpoch - st.lastSeenMs) / 1000).floor();
+    final String name = st.tisbSiteId > 0 ? "TIS-B site ${st.tisbSiteId}" : "Ground station";
     final String db = (dist != null && brg != null)
         ? "${dist.toStringAsFixed(1)} $unit \u2022 ${brg.toStringAsFixed(0)}\u00b0"
         : "position unknown";
@@ -323,7 +337,10 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
             ),
             const SizedBox(width: 6),
             Text(value,
-                style: TextStyle(fontSize: 12, fontFeatures: const [FontFeature.tabularFigures()], color: color)),
+                style: TextStyle(
+                    fontSize: 12,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                    color: color)),
           ],
         ),
       ),
@@ -343,8 +360,8 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
                 children: [
                   const Padding(
                     padding: EdgeInsets.fromLTRB(16, 12, 16, 4),
-                    child: Text("Show message types",
-                        style: TextStyle(fontWeight: FontWeight.bold)),
+                    child:
+                        Text("Show message types", style: TextStyle(fontWeight: FontWeight.bold)),
                   ),
                   for (final entry in AdsbStatus.filterTypes.entries)
                     CheckboxListTile(
@@ -368,162 +385,157 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Constants.appBarBackgroundColor,
-        title: const Text("ADS-B Status"),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.wifi_tethering),
-            tooltip: "Stratus Open ADS-B Mode — send once while on Stratus Wi-Fi",
-            onPressed: _sendStratusOpenMode,
-          ),
-          const SizedBox(width: 10),
-        ],
-      ),
-      body: Column(
-        children: [
-          // Live receiver status. Bounded + scrollable so expanding the
-          // Diagnostics card can't overflow the screen; the message log below
-          // keeps its own space.
-          ConstrainedBox(
-            constraints: BoxConstraints(
-                maxHeight: MediaQuery.of(context).size.height * 0.55),
-            child: SingleChildScrollView(
-              child: AnimatedBuilder(
-                animation: Listenable.merge(
-                    [Storage().timeChange, Storage().adsbStatus.change]),
-                builder: (context, _) {
-                  final AdsbStatus s = Storage().adsbStatus;
-                  final Color connColor = !s.connected
-                      ? Colors.grey
-                      : (!s.gpsValid ? Colors.amber : Colors.green);
-                  return Column(
-                    children: [
-                      _sectionHeader("POSITION", "driving the aircraft symbol"),
-                      _modeSelector(
-                        Storage.gpsSourceModes,
-                        Storage().gpsSourceMode,
-                        Storage.gpsSourceModeName,
-                        (m) => Storage().selectGpsSourceMode(m),
-                      ),
-                      // Every candidate, each describing only itself, with the
-                      // selected one marked. The same hardware used to be
-                      // described from three different angles in three tiles
-                      // that were free to disagree with each other.
-                      _candidateTile(Icons.smartphone, "This device's GPS",
-                          Storage().deviceGpsHealth,
-                          Storage().acceptsPositionFrom(PositionOrigin.internal)),
-                      _candidateTile(Icons.settings_input_antenna, "ADS-B receiver",
-                          Storage().receiverPositionHealth,
-                          Storage().acceptsPositionFrom(PositionOrigin.external)),
-                      _candidateTile(Icons.cloud_outlined, "Internet feed",
-                          Storage().feedPositionHealth,
-                          Storage().acceptsPositionFrom(PositionOrigin.network)),
-                      // The answer to "where is my position actually coming
-                      // from", in one sentence -- including when the honest
-                      // answer is that it is not coming from anywhere any more.
-                      Card(
-                        child: ListTile(
-                          dense: true,
-                          leading: Icon(Icons.place_outlined,
-                              color: Storage().positionIsLive
-                                  ? Colors.green
-                                  : (Storage().positionIsFrozen
-                                      ? Colors.amber : Colors.grey)),
-                          title: Text(
+    // Two tabs rather than one split screen. The status sections and the
+    // message log were sharing the height 55/45, which left the traffic and
+    // receiver settings below the fold with no sign they were there.
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        appBar: AppBar(
+          backgroundColor: Constants.appBarBackgroundColor,
+          title: const Text("ADS-B Status"),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.wifi_tethering),
+              tooltip: "Stratus Open ADS-B Mode \u2014 send once while on Stratus Wi-Fi",
+              onPressed: _sendStratusOpenMode,
+            ),
+            const SizedBox(width: 10),
+          ],
+          bottom: const TabBar(tabs: [
+            Tab(text: "Status"),
+            Tab(text: "Messages"),
+          ]),
+        ),
+        body: TabBarView(children: [
+          SingleChildScrollView(
+            child: AnimatedBuilder(
+                  animation: Listenable.merge([Storage().timeChange, Storage().adsbStatus.change]),
+                  builder: (context, _) {
+                    final AdsbStatus s = Storage().adsbStatus;
+                    final Color connColor =
+                        !s.connected ? Colors.grey : (!s.gpsValid ? Colors.amber : Colors.green);
+                    return Column(
+                      children: [
+                        _sectionHeader("POSITION", "driving the aircraft symbol"),
+                        _modeSelector(
+                          Storage.gpsSourceModes,
+                          Storage().gpsSourceMode,
+                          Storage.gpsSourceModeName,
+                          (m) => Storage().selectGpsSourceMode(m),
+                        ),
+                        // Every candidate, each describing only itself, with the
+                        // selected one marked. The same hardware used to be
+                        // described from three different angles in three tiles
+                        // that were free to disagree with each other.
+                        _candidateTile(
+                            Icons.smartphone,
+                            "This device's GPS",
+                            Storage().deviceGpsHealth,
+                            eligible: Storage().acceptsPositionFrom(PositionOrigin.internal),
+                            inUse: Storage().positionInUse == PositionOrigin.internal),
+                        _candidateTile(
+                            Icons.settings_input_antenna,
+                            "ADS-B receiver",
+                            Storage().receiverPositionHealth,
+                            eligible: Storage().acceptsPositionFrom(PositionOrigin.external),
+                            inUse: Storage().positionInUse == PositionOrigin.external),
+                        _candidateTile(
+                            Icons.cloud_outlined,
+                            "Internet feed",
+                            Storage().feedPositionHealth,
+                            eligible: Storage().acceptsPositionFrom(PositionOrigin.network),
+                            inUse: Storage().positionInUse == PositionOrigin.network),
+                        // The answer to "where is my position actually coming
+                        // from", in one sentence -- including when the honest
+                        // answer is that it is not coming from anywhere any more.
+                        _row(
+                            Icons.place_outlined,
                             Gps.isPositionCloseToZero(Storage().position)
                                 ? "No position"
                                 : "${Storage().position.latitude.toStringAsFixed(4)}, "
-                                  "${Storage().position.longitude.toStringAsFixed(4)}"
-                                  "   ${(Storage().position.altitude * Storage().units.mToF).round()} ft",
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                          trailing: Text(Storage().positionProvenanceShort,
-                              style: TextStyle(
-                                  fontSize: 12,
-                                  color: Storage().positionIsLive
-                                      ? Colors.green
-                                      : (Storage().positionIsFrozen
-                                          ? Colors.amber : Colors.grey))),
-                        ),
-                      ),
+                                    "${Storage().position.longitude.toStringAsFixed(4)}"
+                                    "   ${(Storage().position.altitude * Storage().units.mToF).round()} ft",
+                            Storage().positionIsLive
+                                ? Colors.green
+                                : (Storage().positionIsFrozen ? Colors.amber : Colors.grey),
+                            value: Storage().positionProvenanceShort,
+                            bold: true),
 
-                      _sectionHeader("TRAFFIC", "targets on the map"),
-                      _modeSelector(
-                        Storage.trafficSourceModes,
-                        Storage().trafficSourceMode,
-                        Storage.trafficSourceModeName,
-                        (m) => Storage().selectTrafficSourceMode(m),
-                      ),
-                      _candidateTile(Icons.settings_input_antenna, "ADS-B receiver",
-                          Storage().receiverTrafficHealth,
-                          Storage().usesReceiverTraffic),
-                      _candidateTile(Icons.cloud_outlined, "Internet feed",
-                          Storage().feedTrafficHealth,
-                          Storage().usesNetworkTraffic),
-                      // Fly-as belongs with the feed: it is the one setting that
-                      // turns feed traffic into a position.
-                      if (Storage().needsNetworkFeed)
-                        Card(
-                          child: ListTile(
-                            dense: true,
-                            leading: const Icon(Icons.badge_outlined, color: Colors.orange),
-                            title: const Text("Fly as"),
-                            trailing: SizedBox(
-                              width: 110,
-                              child: TextField(
-                                controller: _tailController,
-                                textCapitalization: TextCapitalization.characters,
-                                decoration: const InputDecoration(
-                                  hintText: "N719CG",
-                                  isDense: true,
+                        _sectionHeader("TRAFFIC", "targets on the map"),
+                        _modeSelector(
+                          Storage.trafficSourceModes,
+                          Storage().trafficSourceMode,
+                          Storage.trafficSourceModeName,
+                          (m) => Storage().selectTrafficSourceMode(m),
+                        ),
+                        _candidateTile(Icons.settings_input_antenna, "ADS-B receiver",
+                            Storage().receiverTrafficHealth,
+                            eligible: Storage().usesReceiverTraffic,
+                            inUse: Storage().usesReceiverTraffic &&
+                                Storage().adsbStatus.trafficFresh),
+                        _candidateTile(Icons.cloud_outlined, "Internet feed",
+                            Storage().feedTrafficHealth,
+                            eligible: Storage().usesNetworkTraffic,
+                            inUse: Storage().usesNetworkTraffic &&
+                                NetworkTraffic().healthy),
+                        // Fly-as belongs with the feed: it is the one setting that
+                        // turns feed traffic into a position.
+                        if (Storage().needsNetworkFeed)
+                          _row(Icons.badge_outlined, "Fly as", Colors.orange,
+                              trailing: SizedBox(
+                                width: 110,
+                                height: 30,
+                                child: TextField(
+                                  controller: _tailController,
+                                  textCapitalization: TextCapitalization.characters,
+                                  style: const TextStyle(fontSize: 13),
+                                  decoration: const InputDecoration(
+                                    hintText: "N719CG",
+                                    isDense: true,
+                                    contentPadding: EdgeInsets.symmetric(vertical: 6),
+                                  ),
+                                  onChanged: (v) {
+                                    Storage()
+                                        .settings
+                                        .setNetworkOwnshipTail(v.trim().toUpperCase());
+                                    // Drop the old aircraft immediately rather
+                                    // than letting its last position sit there
+                                    // wearing the new tail number.
+                                    Storage().clearNetworkOwnship();
+                                  },
                                 ),
-                                onChanged: (v) {
-                                  Storage().settings
-                                      .setNetworkOwnshipTail(v.trim().toUpperCase());
-                                  // Drop the old aircraft immediately rather
-                                  // than letting its last position sit there
-                                  // wearing the new tail number.
-                                  Storage().clearNetworkOwnship();
-                                },
-                              ),
-                            ),
-                          ),
-                        ),
+                              )),
 
-                      _sectionHeader("RECEIVER", "link health"),
-                      _statusTile(
-                        Icons.settings_input_antenna,
-                        "Connection",
-                        s.connected ? "Connected" : "Disconnected",
-                        connColor,
-                      ),
-                      _statusTile(
-                        Icons.favorite,
-                        "Last heartbeat",
-                        s.secondsSinceHeartbeat < 0
-                            ? "never"
-                            : "${s.secondsSinceHeartbeat}s ago",
-                        s.connected ? Colors.green : Colors.red,
-                      ),
-                      _boolTile(Icons.access_time, "UTC timing OK", s.utcOk),
-                      _boolTile(Icons.power_settings_new, "UAT initialized", s.uatInitialized),
-                      _statusTile(
-                        Icons.cell_tower,
-                        "Ground stations received",
-                        "${s.towerCount}",
-                        s.towerCount > 0 ? Colors.green : Colors.grey,
-                      ),
-                      _stationList(s),
-                      _diagnostics(s),
-                    ],
-                  );
-                },
-              ),
-            ),
+                        _sectionHeader("RECEIVER", "link health"),
+                        _statusTile(
+                          Icons.settings_input_antenna,
+                          "Connection",
+                          s.connected ? "Connected" : "Disconnected",
+                          connColor,
+                        ),
+                        _statusTile(
+                          Icons.favorite,
+                          "Last heartbeat",
+                          s.secondsSinceHeartbeat < 0 ? "never" : "${s.secondsSinceHeartbeat}s ago",
+                          s.connected ? Colors.green : Colors.red,
+                        ),
+                        _boolTile(Icons.access_time, "UTC timing OK", s.utcOk),
+                        _boolTile(Icons.power_settings_new, "UAT initialized", s.uatInitialized),
+                        _statusTile(
+                          Icons.cell_tower,
+                          "Ground stations received",
+                          "${s.towerCount}",
+                          s.towerCount > 0 ? Colors.green : Colors.grey,
+                        ),
+                        _stationList(s),
+                        _diagnostics(s),
+                      ],
+                    );
+                  },
+                ),
           ),
-          const Divider(height: 1),
+          Column(children: [
           // Messages header with pause/resume
           AnimatedBuilder(
             animation: Storage().adsbStatus.logChange,
@@ -533,8 +545,7 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
                 padding: const EdgeInsets.fromLTRB(16, 8, 8, 0),
                 child: Row(
                   children: [
-                    const Text("Messages (last 50)",
-                        style: TextStyle(fontWeight: FontWeight.bold)),
+                    const Text("Messages (last 50)", style: TextStyle(fontWeight: FontWeight.bold)),
                     const Spacer(),
                     IconButton(
                       tooltip: "Filter types",
@@ -570,10 +581,10 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
                     final Color accent = _typeColor(m.typeId);
                     final Color tileColor = accent.withValues(alpha: 0.14);
                     final String? filterTag = switch (m.filter) {
-                      TrafficFilter.ownship   => "filtered: ownship",
-                      TrafficFilter.range     => "filtered: altitude",
+                      TrafficFilter.ownship => "filtered: ownship",
+                      TrafficFilter.range => "filtered: altitude",
                       TrafficFilter.duplicate => "filtered: duplicate",
-                      TrafficFilter.none      => null,
+                      TrafficFilter.none => null,
                     };
                     final String titleText = [
                       m.type,
@@ -623,7 +634,8 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
               },
             ),
           ),
-        ],
+          ]),
+        ]),
       ),
     );
   }

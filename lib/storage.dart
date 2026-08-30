@@ -236,6 +236,14 @@ class Storage {
       acceptsPositionFrom(_positionOrigin) &&
       (DateTime.now().millisecondsSinceEpoch - _positionOriginMs) <= 2 * gpsSwitchoverTimeMs;
 
+  /// The source actually driving the aircraft symbol right now, or none.
+  ///
+  /// Distinct from what the mode *allows*: in Auto both the receiver and this
+  /// device are allowed, so asking [acceptsPositionFrom] lights up two sources
+  /// at once and says nothing about which one you are flying on.
+  PositionOrigin get positionInUse =>
+      positionIsLive ? _positionOrigin : PositionOrigin.none;
+
   /// Record an accepted position write. One place, so provenance and its
   /// timestamp can never disagree.
   void _recordPosition(PositionOrigin origin, {String detail = ""}) {
@@ -277,7 +285,29 @@ class Storage {
   /// whoever's it was, and [positionIsLive] already reports it as no longer
   /// current because the new selection does not accept that origin.
   void applySourceModes() {
+    applyTrafficSource();
+    _applyPositionSource();
+  }
+
+  /// Drop traffic the previous selection left behind -- those targets stop
+  /// updating the moment the source changes, so they would otherwise sit on the
+  /// map as ghosts until they aged out -- and run the feed if either half of the
+  /// app now wants it.
+  void applyTrafficSource() {
     trafficCache.clear();
+    if (needsNetworkFeed) {
+      NetworkTraffic().start();
+    }
+    else {
+      NetworkTraffic().stop();
+    }
+  }
+
+  /// Only for a change of *position* source. Changing the traffic source must
+  /// not come through here: resetting these clocks forces Auto back to this
+  /// device for up to [gpsSwitchoverTimeMs], so switching traffic to the feed
+  /// used to knock the receiver out of the position handoff for half a minute.
+  void _applyPositionSource() {
     if (!isNetworkSource) {
       ownshipMessageIcao = 0;
       ownshipMessageCallsign = "";
@@ -287,12 +317,6 @@ class Storage {
     final int stale = DateTime.now().millisecondsSinceEpoch - 2 * gpsSwitchoverTimeMs - 1;
     _lastMsGpsSignal = stale;
     _lastMsExternalSignal = stale;
-    if (needsNetworkFeed) {
-      NetworkTraffic().start();
-    }
-    else {
-      NetworkTraffic().stop();
-    }
   }
 
   /// Stop pretending to be whatever aircraft was adopted from the feed. The
@@ -326,7 +350,7 @@ class Storage {
     }
     trafficSourceMode = mode;
     settings.setTrafficSourceMode(mode);
-    applySourceModes();
+    applyTrafficSource(); // position is a separate decision; leave it alone
   }
 
   /// One or two words naming a mode, for a selector where all the options are
