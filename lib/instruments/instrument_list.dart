@@ -10,7 +10,6 @@ import 'package:avaremp/io/network_traffic.dart';
 import 'package:avaremp/storage.dart';
 import 'package:avaremp/plan/waypoint.dart';
 import 'package:avaremp/utils/toast.dart';
-import 'package:dropdown_button2/dropdown_button2.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:latlong2/latlong.dart';
@@ -851,125 +850,138 @@ class InstrumentListState extends State<InstrumentList> {
     );
   }
 
-  // corner menu: tile sizing, reset layout, and help. Lives top-left and is fixed.
+  /// Corner button for the panel menu. Fixed top-left.
   Widget _makeMenu() {
     return Positioned(
       left: 5,
       top: 5,
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton2<String>(
-          dropdownStyleData: DropdownStyleData(
-            decoration: BoxDecoration(borderRadius: BorderRadius.circular(10)),
-            width: Constants.screenWidth(context) / 2,
-          ),
-          isExpanded: false,
-          customButton: CircleAvatar(radius: 16, backgroundColor: Theme.of(context).scaffoldBackgroundColor.withValues(alpha: 0.7), child: const Icon(Icons.arrow_drop_down),),
-          onChanged: (value) {
-            setState(() {
-            });
-          },
-          items: [
-            DropdownMenuItem(
-              value: "4",
-              onTap:() {
-                // Make a toast and show
-                Toast.showToast(context,
-                    "You may adjust the size of the tiles using Expand/Contract.\n"
-                    "You may drag any tile to move it anywhere on the screen.\n"
-                    "Use Lock Tiles to prevent accidentally moving tiles, and Unlock Tiles to move them again.\n"
-                    "Each tile is listed in this menu: tap + to show it, or - to hide it.\n"
-                    "Use Reset Layout to restore the default tiles and positions.\n\n"
-                    "Available Tiles:\n"
-                    "GS  - Ground speed.\n"
-                    "ALT - GPS altitude.\n"
-                    "MT  - Magnetic track.\n"
-                    "PRV - Tap to go to the previous waypoint as shown.\n"
-                    "NXT - Tap to go to the next waypoint as shown.\n"
-                    "DIS - Distance to the next waypoint.\n"
-                    "BRG - Bearing to the next waypoint.\n"
-                    "GEL - Ground elevation. Needs Elevation charts.\n"
-                    "ETA - Estimated time of arrival at the next waypoint.\n"
-                    "ETE - Estimated time en-route to the next waypoint.\n"
-                    "VSR - VSI required to arrive at the NXT airport 1000ft above its elevation.\n"
-                    "UPT - Tap to start/stop the up timer.\n"
-                    "DNT - Tap to start/stop the down timer.\n"
-                    "UTC - Coordinated Universal Time.\n"
-                    "SRC - Which source is driving the aircraft symbol. Device=this machine's GPS (green), ADS-B=the receiver (blue), a tail number=synthesised from the internet feed (orange). Frozen=the last position is still on screen but nothing is refreshing it. Searching / No Fix / No Link / No GPS / Off say why there is none. Tap to open the status screen, where the source is chosen and explained.\n"
-                    "FLT - Total flight time in hours. Tap to reset.\n"
-                    "ADSB- Where the traffic on the map comes from. ADS-B=your receiver (green), Web=the internet feed (orange, seconds late), Both=receiver targets with feed targets filling the gaps. Quiet=receiver connected but hearing nothing. On the map, a filled dot on a target's label means your receiver heard it; a hollow dot means the feed relayed it. Tap to open the status screen.\n",
-                    null, 30);
-                },
-                child: _menuRow(Icons.help_outline, "Help"),
-            ),
-            DropdownMenuItem(
-              value: "1",
-              onTap:() {
-                Storage().settings.setInstrumentScaleFactor(Storage().settings.getInstrumentScaleFactor() - 0.1);
-              },
-              child: _menuRow(Icons.zoom_in, "Expand"),
-            ),
-            DropdownMenuItem(
-              value: "2",
-              onTap:() {
-                Storage().settings.setInstrumentScaleFactor(Storage().settings.getInstrumentScaleFactor() + 0.1);
-              },
-              child: _menuRow(Icons.zoom_out, "Contract"),
-            ),
-            DropdownMenuItem(
-              value: "dock",
-              onTap: () {
-                setState(() {
-                  // cycle through the docks; dragging to an edge does this too
-                  const List<PanelDock> order = [
-                    PanelDock.left, PanelDock.top, PanelDock.right,
-                    PanelDock.bottom, PanelDock.free];
-                  _dock = order[(order.indexOf(_dock) + 1) % order.length];
-                });
-                _savePositions();
-              },
-              child: _menuRow(Icons.dashboard_outlined,
-                  "Dock: ${_dock.name}"),
-            ),
-            DropdownMenuItem(
-              value: "lock",
-              onTap:() {
-                setState(() {
-                  Storage().settings.setInstrumentsLocked(!Storage().settings.isInstrumentsLocked());
-                });
-              },
-              child: Storage().settings.isInstrumentsLocked()
-                  ? _menuRow(Icons.lock_open, "Unlock Panel")
-                  : _menuRow(Icons.lock_outline, "Lock Panel"),
-            ),
-            DropdownMenuItem(
-              value: "3",
-              onTap: _resetLayout,
-              child: _menuRow(Icons.restart_alt, "Reset Layout"),
-            ),
-            for(final String code in _items.where((c) => c.isNotEmpty))
-              DropdownMenuItem(
-                value: "toggle-$code",
-                onTap: () => _toggleTile(code),
-                child: _menuRow(_visible.contains(code) ? Icons.remove_circle_outline : Icons.add_circle_outline,
-                    _tileLabels[code] ?? code),
-              ),
-          ],
-        )
+      child: GestureDetector(
+        onTap: _showPanelMenu,
+        child: CircleAvatar(
+          radius: 16,
+          backgroundColor:
+              Theme.of(context).scaffoldBackgroundColor.withValues(alpha: 0.7),
+          child: const Icon(Icons.tune, size: 18),
+        ),
       ),
     );
   }
 
-  // a dropdown menu entry with a leading icon
-  Widget _menuRow(IconData icon, String label) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, size: 16),
-        const SizedBox(width: 8),
-        Text(label, style: const TextStyle(fontSize: 12)),
-      ],
+  /// The panel menu.
+  ///
+  /// This was a dropdown of twenty-three stacked entries -- six actions and one
+  /// row per tile -- so it scrolled, and every tile you toggled closed it, which
+  /// meant reopening and re-scrolling for the next one. The actions are a single
+  /// row of icons and the tiles are a grid of chips, which fits without
+  /// scrolling, and toggling rebuilds in place instead of dismissing.
+  void _showPanelMenu() {
+    showDialog<void>(
+      context: context,
+      barrierColor: Colors.black26,
+      builder: (context) {
+        return Dialog(
+          alignment: Alignment.topLeft,
+          insetPadding: const EdgeInsets.fromLTRB(8, 44, 8, 8),
+          child: StatefulBuilder(
+            builder: (context, setMenuState) {
+              void act(VoidCallback f) {
+                f();
+                setMenuState(() {});
+              }
+
+              final bool locked = Storage().settings.isInstrumentsLocked();
+              return Padding(
+                padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      IconButton(
+                        tooltip: "Bigger",
+                        icon: const Icon(Icons.zoom_in),
+                        onPressed: () => act(() => setState(() => _fontScale =
+                            (_fontScale * 1.1).clamp(_minScale, _maxScale))),
+                      ),
+                      IconButton(
+                        tooltip: "Smaller",
+                        icon: const Icon(Icons.zoom_out),
+                        onPressed: () => act(() => setState(() => _fontScale =
+                            (_fontScale / 1.1).clamp(_minScale, _maxScale))),
+                      ),
+                      IconButton(
+                        tooltip: "Dock: ${_dock.name}",
+                        icon: const Icon(Icons.dashboard_outlined),
+                        onPressed: () => act(() {
+                          setState(() {
+                            const List<PanelDock> order = [
+                              PanelDock.left, PanelDock.top, PanelDock.right,
+                              PanelDock.bottom, PanelDock.free];
+                            _dock = order[(order.indexOf(_dock) + 1) % order.length];
+                          });
+                          _savePositions();
+                        }),
+                      ),
+                      IconButton(
+                        tooltip: locked ? "Unlock panel" : "Lock panel",
+                        icon: Icon(locked ? Icons.lock_outline : Icons.lock_open),
+                        onPressed: () => act(() => setState(() =>
+                            Storage().settings.setInstrumentsLocked(!locked))),
+                      ),
+                      IconButton(
+                        tooltip: "Reset layout",
+                        icon: const Icon(Icons.restart_alt),
+                        onPressed: () => act(_resetLayout),
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        tooltip: "Help",
+                        icon: const Icon(Icons.help_outline),
+                        onPressed: _showHelp,
+                      ),
+                    ]),
+                    const Divider(height: 8),
+                    // Chips rather than rows: seventeen tiles fit in five lines
+                    // instead of seventeen, and the state is readable at a glance.
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 2,
+                      children: [
+                        for (final String code in _items.where((c) => c.isNotEmpty))
+                          FilterChip(
+                            visualDensity: VisualDensity.compact,
+                            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            labelStyle: const TextStyle(fontSize: 12),
+                            label: Text(_tileLabels[code] ?? code),
+                            selected: _visible.contains(code),
+                            onSelected: (_) => act(() => _toggleTile(code)),
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        );
+      },
     );
   }
+
+  void _showHelp() {
+    Toast.showToast(
+        context,
+        "Drag the panel to move it; drag it to an edge to dock it there.\n"
+        "Pinch to resize, or use the zoom buttons.\n"
+        "Chips show and hide readouts. Lock stops accidental dragging.\n\n"
+        "Position From -- what is driving the aircraft symbol. Frozen means the "
+        "last position is still on screen with nothing refreshing it.\n"
+        "Traffic From -- where the map's targets come from. On a target's label, "
+        "a filled dot means your receiver heard it, hollow means the web relayed it.\n"
+        "Tap either tile for the full status screen.",
+        null, 20);
+  }
+
 
   @override
   Widget build(BuildContext context) {
