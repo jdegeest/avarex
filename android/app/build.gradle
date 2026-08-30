@@ -67,9 +67,17 @@ android {
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            // signingConfig signingConfigs.debug
+            // Signed with the debug key so a release build can actually be
+            // installed and flown. Without a signingConfig at all, `flutter
+            // build apk --release` produces an unsigned artifact that no device
+            // will accept, which makes it impossible to test the app as it will
+            // really perform -- a debug APK runs on the JIT and is not
+            // representative.
+            //
+            // This is NOT distributable: the debug key is shared and well known,
+            // and the Play Store rejects it. Publishing needs a real keystore,
+            // an android/key.properties, and a signingConfigs.release block.
+            signingConfig signingConfigs.debug
         }
     }
 }
