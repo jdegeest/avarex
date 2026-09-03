@@ -303,6 +303,25 @@ class TrafficCache {
     Storage().trafficChange.value++;
   }
 
+  /// Keep only the feed-sourced aircraft named in [keep].
+  ///
+  /// The feed is a snapshot API: each response is the complete picture of the
+  /// area asked about, so an aircraft that is not in it is either gone or
+  /// outside the area, and either way must come off the map. A receiver is the
+  /// opposite -- an event stream where silence means nothing -- so its targets
+  /// are left alone and still age out on their own.
+  ///
+  /// Without this, panning stranded every aircraft from the previous area on
+  /// screen for the full minute until it aged out.
+  void retainNetworkTraffic(Set<int> keep) {
+    final int before = _traffic.length;
+    _traffic.removeWhere((icao, t) =>
+        t.message.source == TrafficSource.network && !keep.contains(icao));
+    if (_traffic.length != before) {
+      _notifyTrafficChanged();
+    }
+  }
+
   /// Drop a specific aircraft. Used when one is adopted as ownship: it stops
   /// being inserted as traffic, so without this its last reported position
   /// would sit on the map until it aged out.

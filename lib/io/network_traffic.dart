@@ -162,7 +162,9 @@ class NetworkTraffic {
     _polling = true;
     try {
       bool anySucceeded = false;
+      bool allAreasSucceeded = true;
       int count = 0;
+      final Set<int> seen = <int>{};
 
       // Ownship first, by registration. This used to be looked for among the
       // area results, which only worked if the aircraft happened to be inside
@@ -184,10 +186,19 @@ class NetworkTraffic {
             "lat/${c.latitude.toStringAsFixed(4)}"
             "/lon/${c.longitude.toStringAsFixed(4)}/dist/$radius");
         if (list == null) {
+          allAreasSucceeded = false;
           continue;
         }
         anySucceeded = true;
-        count += _ingest(list);
+        count += _ingest(list, seen);
+      }
+
+      // Retire what the feed no longer reports -- but only when every area came
+      // back. On a partial failure the missing aircraft are missing because we
+      // did not ask, not because they are gone, and clearing them would blank
+      // the map on a single dropped request.
+      if (allAreasSucceeded) {
+        Storage().trafficCache.retainNetworkTraffic(seen);
       }
 
       if (anySucceeded) {
@@ -256,8 +267,9 @@ class NetworkTraffic {
     }
   }
 
-  /// Returns how many targets were placed on the map.
-  int _ingest(List<dynamic> list) {
+  /// Places targets on the map and records which aircraft the feed reported, so
+  /// the ones it no longer reports can be retired rather than left as ghosts.
+  int _ingest(List<dynamic> list, Set<int> reported) {
     int count = 0;
     for (final dynamic raw in list) {
       if (raw is! Map<String, dynamic>) {
@@ -295,6 +307,7 @@ class NetworkTraffic {
       // these out exactly as they would a weak receiver.
       m.time = DateTime.now().toUtc().subtract(Duration(milliseconds: (seen * 1000).round()));
       Storage().trafficCache.putTraffic(m, source: TrafficSource.network);
+      reported.add(icao);
       count++;
     }
     return count;
