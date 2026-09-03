@@ -215,6 +215,18 @@ class Storage {
   /// The feed runs if either position or traffic wants it.
   bool get needsNetworkFeed => isNetworkSource || usesNetworkTraffic;
 
+  /// What the map is currently showing, published on every pan. The internet
+  /// traffic feed queries this area as well as the area around ownship, so
+  /// panning somewhere brings up the traffic there -- previously the query
+  /// followed ownship only, and panning showed nothing new.
+  LatLng? mapViewCentre;
+  double mapViewRadiusNm = 0;
+
+  void setMapView(LatLng centre, double radiusNm) {
+    mapViewCentre = centre;
+    mapViewRadiusNm = radiusNm;
+  }
+
   PositionOrigin _positionOrigin = PositionOrigin.none;
   int _positionOriginMs = 0;
   String _positionOriginDetail = ""; // tail number or callsign, where there is one

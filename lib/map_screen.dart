@@ -542,6 +542,12 @@ class MapScreenState extends State<MapScreen> {
         if (mapEvent is MapEventMoveEnd) {
           // save location for next start
           showOnMap(_controller.camera.center);
+          // Tell the traffic feed what we are looking at. Half the visible
+          // diagonal, plus a margin so targets are already there as they come
+          // over the edge.
+          final LatLngBounds vb = _controller.camera.visibleBounds;
+          Storage().setMapView(_controller.camera.center,
+              GeoCalculations().calculateDistance(vb.southWest, vb.northEast) / 2 * 1.15);
           Storage().settings.setZoom(_controller.camera.zoom);
           Storage().settings.setRotation(_controller.camera.rotation);
           _interacting = false;
