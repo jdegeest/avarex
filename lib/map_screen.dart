@@ -854,7 +854,8 @@ class MapScreenState extends State<MapScreen> {
             valueListenable: Storage().trafficChange,
             builder: (context, value, _) {
               return PolylineLayer(
-                polylines: Storage().trafficCache.getTraffic()
+                polylines: Storage().trafficCache
+                    .getTrafficToDraw(_controller.camera.visibleBounds)
                   // A one-minute projection drawn from a position we have not
                   // confirmed in seconds is fiction, so stale targets get no line.
                   .where((t) => t.message.airborne && t.message.velocity > 0 && !t.isStale)
@@ -883,7 +884,8 @@ class MapScreenState extends State<MapScreen> {
             double angle = _northUp ? 0 : Storage().position.heading;
             return MarkerLayer(
               markers:
-              Storage().trafficCache.getTraffic().map((e) {
+              Storage().trafficCache
+                  .getTrafficToDraw(_controller.camera.visibleBounds).map((e) {
                 return Marker( // dot is centered at the traffic position; labels offset to the right
                   point: e.getCoordinates(),
                   width: Traffic.iconWidth,

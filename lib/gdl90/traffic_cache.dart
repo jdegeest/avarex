@@ -4,6 +4,7 @@ import 'package:avaremp/gdl90/traffic_report_message.dart';
 import 'package:avaremp/utils/geo_calculations.dart';
 import 'package:avaremp/storage.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart' show LatLngBounds;
 import 'package:latlong2/latlong.dart';
 import 'package:avaremp/gdl90/traffic_alerts.dart';
 import 'package:avaremp/constants.dart';
@@ -371,6 +372,29 @@ class TrafficCache {
     final int nowMs = DateTime.now().millisecondsSinceEpoch;
     _traffic.removeWhere((key, t) => t.isOldAt(nowMs));
     return _traffic.values.toList();
+  }
+
+  /// The most a map layer will draw. Every target costs a marker and three
+  /// CustomPaints, so an unbounded list is both unreadable and slow: the
+  /// internet feed can return several hundred aircraft over a wide view, where
+  /// a receiver only ever hears a handful.
+  static const int kMaxDrawn = 150;
+
+  /// Traffic worth drawing for the given view: on screen, nearest first, and
+  /// capped. [bounds] is the map's visible area; targets outside it cost
+  /// rendering for something nobody can see.
+  List<Traffic> getTrafficToDraw(LatLngBounds bounds) {
+    final List<Traffic> visible = [];
+    for (final Traffic t in getTraffic()) {
+      if (bounds.contains(t.message.coordinates)) {
+        visible.add(t);
+      }
+    }
+    if (visible.length > kMaxDrawn) {
+      visible.sort((a, b) => _score(a).compareTo(_score(b)));
+      return visible.sublist(0, kMaxDrawn);
+    }
+    return visible;
   }
 }
 
