@@ -1892,8 +1892,7 @@ class Plane extends CustomPainter {
     paintImage(canvas: canvas, rect:
       Rect.fromLTWH(0, size.height / 2 - size.width / 2, size.width, size.width),
       image: img, opacity: live ? 1.0 : 0.35,
-      colorFilter: live ? null
-          : const ui.ColorFilter.mode(Color(0xFF9E9E9E), BlendMode.saturation));
+      colorFilter: live ? null : Constants.staleSymbolFilter);
     if (live) {
       // The track line is a projection of where we are going, which means
       // nothing when the position is not moving; drop it rather than draw a

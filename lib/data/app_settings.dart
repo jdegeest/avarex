@@ -133,6 +133,44 @@ class AppSettings {
     provider.setString("key-network-ownship-tail", value);
   }
 
+  /// Share this device's own GPS fix with other copies of the app on the
+  /// local network, as GDL90 on the standard port.
+  bool getSharePosition() {
+    return provider.getValue("key-share-position", defaultValue: false) as bool;
+  }
+
+  void setSharePosition(bool value) {
+    provider.setBool("key-share-position", value);
+  }
+
+  /// Name shown to receivers of the shared fix. Blank means a sensible default.
+  String getShareName() {
+    return provider.getValue("key-share-name", defaultValue: "") as String;
+  }
+
+  void setShareName(String value) {
+    provider.setString("key-share-name", value);
+  }
+
+  /// One host beyond the broadcast domain to also send the fix to (Tailscale
+  /// and the like do not carry broadcasts). Blank means broadcast only.
+  String getShareUnicastHost() {
+    return provider.getValue("key-share-unicast-host", defaultValue: "") as String;
+  }
+
+  void setShareUnicastHost(String value) {
+    provider.setString("key-share-unicast-host", value);
+  }
+
+  /// Address stamped on shared frames; 0 until first assigned.
+  int getShareIcao() {
+    return provider.getValue("key-share-icao", defaultValue: 0) as int;
+  }
+
+  void setShareIcao(int value) {
+    provider.setInt("key-share-icao", value);
+  }
+
   void setGpsSourceMode(String mode) {
     provider.setString("key-gps-source-mode", mode);
   }

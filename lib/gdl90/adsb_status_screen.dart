@@ -4,6 +4,7 @@ import 'package:avaremp/gdl90/stratus_open_mode.dart';
 import 'package:avaremp/gdl90/traffic_report_message.dart';
 import 'package:avaremp/io/gps.dart';
 import 'package:avaremp/io/network_traffic.dart';
+import 'package:avaremp/io/position_share.dart';
 import 'package:avaremp/storage.dart';
 import 'package:avaremp/utils/geo_calculations.dart';
 import 'package:avaremp/utils/toast.dart';
@@ -28,6 +29,10 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
   final ScrollController _statusScroll = ScrollController();
   late final TextEditingController _tailController =
       TextEditingController(text: Storage().settings.getNetworkOwnshipTail());
+  late final TextEditingController _shareNameController =
+      TextEditingController(text: Storage().settings.getShareName());
+  late final TextEditingController _shareHostController =
+      TextEditingController(text: Storage().settings.getShareUnicastHost());
 
   @override
   void initState() {
@@ -57,6 +62,8 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
     _scroll.dispose();
     _statusScroll.dispose();
     _tailController.dispose();
+    _shareNameController.dispose();
+    _shareHostController.dispose();
     super.dispose();
   }
 
@@ -81,8 +88,9 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
                     fontWeight: bold ? FontWeight.bold : FontWeight.normal)),
           ),
           const SizedBox(width: 8),
-          trailing ??
-              Text(value, style: TextStyle(color: color, fontSize: 12)),
+          if (value.isNotEmpty)
+            Text(value, style: TextStyle(color: color, fontSize: 12)),
+          if (trailing != null) trailing,
         ],
       ),
     );
@@ -164,6 +172,72 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
         ],
       ),
     );
+  }
+
+  /// A small text field that sits at the end of a status row.
+  Widget _field(TextEditingController c, String hint, void Function(String) onChanged,
+      {double width = 130, bool caps = false}) {
+    return SizedBox(
+      width: width,
+      height: 30,
+      child: TextField(
+        controller: c,
+        textCapitalization: caps ? TextCapitalization.characters : TextCapitalization.none,
+        style: const TextStyle(fontSize: 13),
+        decoration: InputDecoration(
+          hintText: hint,
+          isDense: true,
+          contentPadding: const EdgeInsets.symmetric(vertical: 6),
+        ),
+        onChanged: onChanged,
+      ),
+    );
+  }
+
+  /// Sharing this device's fix, and which other devices are offering theirs.
+  /// One switch does it; the phone appears on the other side as a receiver,
+  /// which Auto already prefers, so there is nothing to set up there.
+  List<Widget> _shareRows() {
+    final PositionShare share = PositionShare();
+    final bool on = Storage().settings.getSharePosition();
+    final String state = !on
+        ? "off"
+        : share.lastError.isNotEmpty
+            ? share.lastError
+            : share.transmitting
+                ? "sending, ${share.sent}"
+                : "no own fix yet";
+    final Color color = !on
+        ? Colors.grey
+        : (share.lastError.isNotEmpty ? Colors.red
+            : (share.transmitting ? Colors.green : Colors.amber));
+    final List<(String, int)> heard = Storage().sharersHeard;
+    final int now = DateTime.now().millisecondsSinceEpoch;
+    return [
+      _row(Icons.podcasts, "Share my GPS", color,
+          value: state,
+          trailing: Switch(
+            value: on,
+            onChanged: (v) {
+              Storage().settings.setSharePosition(v);
+              share.applySetting();
+            },
+          )),
+      if (on) ...[
+        _row(Icons.badge_outlined, "Share as", Colors.grey,
+            trailing: _field(_shareNameController, share.callSign,
+                (v) => Storage().settings.setShareName(v.trim()), caps: true)),
+        _row(Icons.alt_route, "Also send to", Colors.grey,
+            trailing: _field(_shareHostController, "host, if not on this LAN",
+                (v) => Storage().settings.setShareUnicastHost(v.trim()), width: 170)),
+      ],
+      if (heard.isEmpty)
+        _row(Icons.hearing, "Heard from", Colors.grey, value: "no other device")
+      else
+        for (final (String name, int ms) in heard)
+          _row(Icons.hearing, name.isEmpty ? "unnamed device" : name, Colors.green,
+              value: Storage.describeAgeShort(now - ms), bold: true),
+    ];
   }
 
   Widget _boolTile(IconData icon, String title, bool value) =>
@@ -410,7 +484,7 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
         body: TabBarView(children: [
           SingleChildScrollView(
             child: AnimatedBuilder(
-                  animation: Listenable.merge([Storage().timeChange, Storage().adsbStatus.change]),
+                  animation: Listenable.merge([Storage().timeChange, Storage().adsbStatus.change, PositionShare().change]),
                   builder: (context, _) {
                     final AdsbStatus s = Storage().adsbStatus;
                     final Color connColor =
@@ -441,6 +515,12 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
                             eligible: Storage().acceptsPositionFrom(PositionOrigin.external),
                             inUse: Storage().positionInUse == PositionOrigin.external),
                         _candidateTile(
+                            Icons.phone_android,
+                            "Shared from another device",
+                            Storage().sharedPositionHealth,
+                            eligible: Storage().acceptsPositionFrom(PositionOrigin.shared),
+                            inUse: Storage().positionInUse == PositionOrigin.shared),
+                        _candidateTile(
                             Icons.cloud_outlined,
                             "Internet feed",
                             Storage().feedPositionHealth,
@@ -461,6 +541,9 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
                                 : (Storage().positionIsFrozen ? Colors.amber : Colors.grey),
                             value: Storage().positionProvenanceShort,
                             bold: true),
+
+                        _sectionHeader("SHARE", "this device's GPS, to other copies of the app nearby"),
+                        ..._shareRows(),
 
                         _sectionHeader("TRAFFIC", "targets on the map"),
                         _modeSelector(

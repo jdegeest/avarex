@@ -69,7 +69,8 @@ class WarningsWidgetState extends State<WarningsWidget> {
     // platform had no provider, and "no lock" fired even when there was no
     // receiver to get a lock with.
     final GpsState gpsState = Storage().gpsState;
-    if (gpsState != GpsState.internalFix && gpsState != GpsState.externalFix) {
+    if (gpsState != GpsState.internalFix && gpsState != GpsState.externalFix &&
+        gpsState != GpsState.sharedFix) {
       const Map<GpsState, (String, IconData)> presentation = {
         GpsState.noProvider:              ("No GPS on this computer", Icons.gps_off_sharp),
         GpsState.internalPermissionDenied:("Location access denied", Icons.gpp_good_sharp),

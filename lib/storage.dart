@@ -18,6 +18,8 @@ import 'package:avaremp/chart/download_screen.dart';
 import 'package:avaremp/instruments/flight_status.dart';
 import 'package:avaremp/gdl90/adsb_status.dart';
 import 'package:avaremp/gdl90/gdl90_buffer.dart';
+import 'package:avaremp/io/ip_location.dart';
+import 'package:avaremp/io/position_share.dart';
 import 'package:avaremp/io/gps_recorder.dart';
 import 'package:avaremp/gdl90/message_factory.dart';
 import 'package:avaremp/gdl90/fis_block_cache.dart';
@@ -179,6 +181,9 @@ class Storage {
   bool gpsNoLock = false;
   int _lastMsGpsSignal = DateTime.now().millisecondsSinceEpoch;
   int _lastMsExternalSignal = DateTime.now().millisecondsSinceEpoch - gpsSwitchoverTimeMs;
+  /// When this device's own GPS last delivered. A shared fix from another
+  /// device only steps in while this is stale: our own GPS always wins.
+  int _lastMsInternalSignal = 0;
   bool gpsInternal = true;
 
   // ---------------------------------------------------------------------------
@@ -263,14 +268,23 @@ class Storage {
       case "Internal":
         return origin == PositionOrigin.internal;
       case "External":
-        return origin == PositionOrigin.external;
+        return origin == PositionOrigin.external || origin == PositionOrigin.shared;
       case "Network":
         return origin == PositionOrigin.network;
       default: // Auto: the receiver wins whenever it is talking, this device fills in
+        if (origin == PositionOrigin.shared) {
+          // last resort: only when no receiver is talking and this device's
+          // own GPS is not delivering either
+          return gpsInternal && !deviceGpsDelivering;
+        }
         return origin == PositionOrigin.external ||
             (origin == PositionOrigin.internal && gpsInternal);
     }
   }
+
+  /// This device's own GPS has produced a fix recently.
+  bool get deviceGpsDelivering =>
+      DateTime.now().millisecondsSinceEpoch - _lastMsInternalSignal <= gpsSwitchoverTimeMs;
 
   /// Whether a traffic report from this source may be shown.
   bool acceptsTrafficFrom(TrafficSource source) =>
@@ -374,6 +388,19 @@ class Storage {
 
   bool isRollReversed = false;
 
+  /// Other copies of the app heard sharing their GPS on this network, by
+  /// address: name and when last heard. This is the discovery list.
+  final Map<int, (String, int)> heardSharers = {};
+
+  /// Sharers heard in the last half minute, most recent first.
+  List<(String, int)> get sharersHeard {
+    final int now = DateTime.now().millisecondsSinceEpoch;
+    heardSharers.removeWhere((_, v) => now - v.$2 > 30000);
+    final List<(String, int)> l = heardSharers.values.toList();
+    l.sort((a, b) => b.$2.compareTo(a.$2));
+    return l;
+  }
+
   // ADS-B receiver status (heartbeat + ground uplinks post to this directly)
   final AdsbStatus adsbStatus = AdsbStatus();
 
@@ -428,6 +455,9 @@ class Storage {
           ? GpsState.networkFix
           : GpsState.networkNoOwnship;
     }
+    if (_positionOrigin == PositionOrigin.shared && positionIsLive) {
+      return GpsState.sharedFix;
+    }
     if (gpsSourceMode == "External" || !gpsInternal) {
       if (!adsbStatus.connected) {
         return GpsState.externalNoData;
@@ -478,6 +508,14 @@ class Storage {
         return _positionOriginDetail.isEmpty
             ? "the internet feed"
             : "the internet feed, as $_positionOriginDetail";
+      case PositionOrigin.shared:
+        return _positionOriginDetail.isEmpty
+            ? "another device on the network"
+            : "$_positionOriginDetail, shared over the network";
+      case PositionOrigin.approximate:
+        return _positionOriginDetail.isEmpty
+            ? "the network address"
+            : "the network address (near $_positionOriginDetail)";
     }
   }
 
@@ -533,17 +571,26 @@ class Storage {
         Gps.isPositionCloseToZero(position)) {
       return "Nothing from $positionSourceLabel yet.";
     }
+    if (_positionOrigin == PositionOrigin.approximate) {
+      return "Approximate -- guessed from $positionOriginLabel. "
+          "Nothing from $positionSourceLabel yet.";
+    }
     return "Frozen -- last from $positionOriginLabel, $age.";
   }
 
   /// Short word for the instrument tile: what is driving the aircraft symbol.
   String get positionTileLabel {
+    if (_positionOrigin == PositionOrigin.approximate) {
+      return "Approx";
+    }
     if (positionIsFrozen) {
       return "Frozen";
     }
     switch (gpsState) {
       case GpsState.internalFix:              return "Device";
       case GpsState.externalFix:              return "ADS-B";
+      case GpsState.sharedFix:
+        return _positionOriginDetail.isEmpty ? "Shared" : _positionOriginDetail;
       case GpsState.internalSearching:        return "Searching";
       case GpsState.externalNoOwnship:        return "No Fix";
       case GpsState.externalNoData:           return "No Link";
@@ -578,6 +625,10 @@ class Storage {
       case PositionOrigin.external: return "receiver";
       case PositionOrigin.network:
         return _positionOriginDetail.isEmpty ? "feed" : _positionOriginDetail;
+      case PositionOrigin.shared:
+        return _positionOriginDetail.isEmpty ? "shared" : _positionOriginDetail;
+      case PositionOrigin.approximate:
+        return "approx";
     }
   }
 
@@ -590,6 +641,11 @@ class Storage {
     }
     final String age =
         describeAgeShort(DateTime.now().millisecondsSinceEpoch - _positionOriginMs);
+    if (_positionOrigin == PositionOrigin.approximate) {
+      return _positionOriginDetail.isEmpty
+          ? "approx, from IP"
+          : "approx, $_positionOriginDetail";
+    }
     return positionIsLive
         ? "$positionOriginShort $age"
         : "frozen $positionOriginShort $age";
@@ -630,6 +686,21 @@ class Storage {
     final String tail = ownshipMessageCallsign.trim();
     return ("${tail.isEmpty ? "fix" : tail} ${adsbStatus.secondsSinceOwnship} s",
         SourceHealth.ok);
+  }
+
+  /// Another device's shared GPS, as a position candidate.
+  (String, SourceHealth) get sharedPositionHealth {
+    final List<(String, int)> heard = sharersHeard;
+    if (heard.isEmpty) return ("none heard", SourceHealth.absent);
+    if (!acceptsPositionFrom(PositionOrigin.shared)) {
+      return ("standby", SourceHealth.idle);
+    }
+    if (_positionOrigin == PositionOrigin.shared && positionIsLive) {
+      final String name = _positionOriginDetail.isEmpty ? "fix" : _positionOriginDetail;
+      return ("$name ${describeAgeShort(DateTime.now().millisecondsSinceEpoch - _positionOriginMs)}",
+          SourceHealth.ok);
+    }
+    return ("no fix", SourceHealth.degraded);
   }
 
   /// The internet feed, as a position candidate.
@@ -712,10 +783,27 @@ class Storage {
         try {
           Message? m = MessageFactory.buildMessage(message);
           if(m != null && m is OwnShipMessage) {
+            Position p = Position(longitude: m.coordinates.longitude, latitude: m.coordinates.latitude, timestamp: DateTime.timestamp(), accuracy: 0, altitude: m.altitude, altitudeAccuracy: 0, heading: m.heading, headingAccuracy: 0, speed: m.velocity, speedAccuracy: 0);
+            if (PositionShare.isSharedAddress(m.icao)) {
+              // Another device sharing its GPS. Note who, whether or not we
+              // take it, so the status screen can list what it can hear; then
+              // treat it as its own source, never as the receiver: it does
+              // not touch the receiver clocks, its identity or its status.
+              heardSharers[m.icao] = (m.callSign, DateTime.now().millisecondsSinceEpoch);
+              if (!acceptsPositionFrom(PositionOrigin.shared) || Gps.isPositionCloseToZero(p)) {
+                continue;
+              }
+              _lastMsGpsSignal = DateTime.now().millisecondsSinceEpoch;
+              _recordPosition(PositionOrigin.shared, detail: m.callSign);
+              _gpsStack.push(p);
+              vSpeed = m.verticalSpeed;
+              airborne = m.airborne;
+              tracks.add(p);
+              continue;
+            }
             if (!acceptsPositionFrom(PositionOrigin.external)) {
               continue; // the user is navigating on some other source
             }
-            Position p = Position(longitude: m.coordinates.longitude, latitude: m.coordinates.latitude, timestamp: DateTime.timestamp(), accuracy: 0, altitude: m.altitude, altitudeAccuracy: 0, heading: m.heading, headingAccuracy: 0, speed: m.velocity, speedAccuracy: 0);
             if(Gps.isPositionCloseToZero(p)) {
               continue; // skip 0, 0 when GPS is not locked
             }
@@ -816,6 +904,60 @@ class Storage {
     tracks.add(p);
   }
 
+  final IpLocation _ipLocation = IpLocation();
+  int _nextIpLookupMs = 0;
+  bool _ipLookupInFlight = false;
+  String _lastPublicAddress = "";
+  /// How often the public address is checked while it is all we have. The
+  /// check is unmetered; the place lookup behind it only runs when the
+  /// address has changed, so a VPN or exit node toggling moves the map
+  /// within this many seconds.
+  static const int _ipPollMs = 15 * 1000;
+
+  /// With no fix from anything, guess a position from the network address so
+  /// the map at least opens near the user instead of wherever it was last
+  /// closed, and keep it current as that address changes. Only ever fills a
+  /// void: a position that a real source once put on screen, however stale,
+  /// is still better than a guess, so this never replaces one. Whatever it
+  /// writes is marked [PositionOrigin.approximate], which no source mode
+  /// accepts, so it is never live and never navigated on.
+  void _maybeLookupIpPosition() {
+    final int now = DateTime.now().millisecondsSinceEpoch;
+    if (_ipLookupInFlight || now < _nextIpLookupMs) {
+      return;
+    }
+    if (!_nothingBetterThanIp || !(gpsNoProvider || gpsNoLock)) {
+      return;
+    }
+    _ipLookupInFlight = true;
+    _nextIpLookupMs = now + _ipPollMs;
+    _refreshIpPosition().whenComplete(() => _ipLookupInFlight = false);
+  }
+
+  bool get _nothingBetterThanIp =>
+      _positionOrigin == PositionOrigin.none ||
+      _positionOrigin == PositionOrigin.approximate;
+
+  Future<void> _refreshIpPosition() async {
+    final String? address = await _ipLocation.publicAddress();
+    final bool placed = _positionOrigin == PositionOrigin.approximate;
+    if (placed && address != null && address == _lastPublicAddress) {
+      return; // same address as last time, so the same place
+    }
+    final (LatLng, String)? found = await _ipLocation.lookup();
+    if (found == null) {
+      return; // try again next poll
+    }
+    // a real source may have answered while the requests were out
+    if (!_nothingBetterThanIp) {
+      return;
+    }
+    _lastPublicAddress = address ?? "";
+    final (LatLng where, String place) = found;
+    _recordPosition(PositionOrigin.approximate, detail: place);
+    _gpsStack.push(Gps.fromLatLng(where));
+  }
+
   /// Subscribes to the internal GPS. Separate from [startIO] so a GPS-only event
   /// (permission granted) can restart just this, without closing the ADS-B
   /// sockets -- doing that took traffic down for an unrelated reason.
@@ -835,6 +977,7 @@ class Storage {
         return; // skip 0, 0 when GPS is not locked
       }
       _lastMsGpsSignal = DateTime.now().millisecondsSinceEpoch; // update time when GPS signal was last received
+      _lastMsInternalSignal = _lastMsGpsSignal;
       _recordPosition(PositionOrigin.internal);
       _gpsStack.push(data);
       tracks.add(data);
@@ -852,6 +995,9 @@ class Storage {
 
     // GPS data receive
     _udpReceiver.start([4000, 43211, 49002], [false, false, false]);
+
+    // Offer this device's fix to other copies of the app, if asked to.
+    PositionShare().applySetting();
 
     // Broadcast the Avidyne "AVISDK" trigger so any Avidyne IFD on the network
     // starts streaming its Capstone (GDL90) ADS-B data. That data arrives on
@@ -1038,6 +1184,8 @@ class Storage {
       else {
         gpsNoLock = false;
       }
+
+      _maybeLookupIpPosition();
 
       // runway crossings are too brief for the 10 second area cadence
       area.updateRunwayAwareness();

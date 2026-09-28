@@ -54,6 +54,15 @@ class Constants {
   static const Color tracksColor = Colors.green;
   static const Color planBorderColor = Colors.black;
   static const Color planeColor = Color.fromARGB(150, 255, 0, 0);
+  /// Desaturates a symbol whose position is not current. A matrix rather
+  /// than a blend-mode filter: blending a solid colour into the image also
+  /// painted its transparent surround, which put the aircraft in a grey box.
+  static const ColorFilter staleSymbolFilter = ColorFilter.matrix(<double>[
+    0.2126, 0.7152, 0.0722, 0, 0,
+    0.2126, 0.7152, 0.0722, 0, 0,
+    0.2126, 0.7152, 0.0722, 0, 0,
+    0,      0,      0,      1, 0,
+  ]);
   static const Color plateMarkColor = Color.fromARGB(150, 0, 255, 0);
   static const Color tfrColor = Color.fromARGB(255, 255, 0, 0);
   static const Color tfrColorFuture = Color.fromARGB(255, 150, 103, 0);

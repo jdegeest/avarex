@@ -21,6 +21,8 @@ enum GpsState {
   externalFix,
   externalNoOwnship,
   externalNoData,
+  /// Flying on a fix another device on the network is sharing.
+  sharedFix,
   /// Position synthesised from an internet feed by adopting a tail number.
   /// Test data, never a navigation source.
   networkFix,
@@ -58,6 +60,12 @@ enum PositionOrigin {
   internal,
   external,
   network,
+  /// Another device's GPS, shared over the local network. A real fix, but
+  /// someone else's: named as such, never as a receiver.
+  shared,
+  /// Guessed from the network address when nothing else has supplied one.
+  /// City-level at best; a place to open the map, never a fix.
+  approximate,
 }
 
 class Gps {

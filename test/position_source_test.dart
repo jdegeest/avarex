@@ -46,6 +46,8 @@ void main() {
     expect(s.acceptsPositionFrom(PositionOrigin.internal), isTrue);
   });
 
+  sharedSourceTests();
+
   test('Auto never falls back to the internet feed', () {
     s.gpsSourceMode = "Auto";
     expect(s.acceptsPositionFrom(PositionOrigin.network), isFalse);
@@ -118,5 +120,29 @@ void main() {
       }
       s.trafficSourceMode = "Receiver";
     });
+  });
+}
+
+/// A fix shared by another device is its own source: last in line behind the
+/// receiver and this device's own GPS in Auto, and never dressed up as ADS-B.
+void sharedSourceTests() {
+  final Storage s = Storage();
+
+  test('Auto takes a shared fix only when nothing closer is delivering', () {
+    s.gpsSourceMode = "Auto";
+    s.gpsInternal = true; // no receiver talking
+    // fresh install: this device's GPS has never delivered
+    expect(s.acceptsPositionFrom(PositionOrigin.shared), isTrue);
+    s.gpsInternal = false; // receiver talking
+    expect(s.acceptsPositionFrom(PositionOrigin.shared), isFalse);
+  });
+
+  test('Internal and Network never take a shared fix; External does', () {
+    s.gpsSourceMode = "Internal";
+    expect(s.acceptsPositionFrom(PositionOrigin.shared), isFalse);
+    s.gpsSourceMode = "Network";
+    expect(s.acceptsPositionFrom(PositionOrigin.shared), isFalse);
+    s.gpsSourceMode = "External";
+    expect(s.acceptsPositionFrom(PositionOrigin.shared), isTrue);
   });
 }

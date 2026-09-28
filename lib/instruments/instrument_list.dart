@@ -73,10 +73,17 @@ class InstrumentListState extends State<InstrumentList> {
   /// dock rather than being a separate knob to keep in sync.
   PanelDock _dock = PanelDock.left;
   static const String _dockKey = "__DOCK";
-  /// How close to an edge a drag has to end for the panel to snap to it.
-  /// Deliberately tight: you have to genuinely take it to the edge, so a panel
-  /// parked near one side stays floating.
-  static const double _snapFraction = 0.035;
+  final GlobalKey _panelBoxKey = GlobalKey();
+  /// Docking is an act, not a proximity: the panel docks when it is pushed
+  /// into an edge by at least this far past where it can go, and undocks
+  /// when pulled at least this far off the edge. Merely parking near a side,
+  /// or sliding along one, changes nothing, so a floating panel stays
+  /// floating and a docked one stays docked.
+  static const double _dockPushPx = 36;
+  static const double _dockPullPx = 36;
+  /// Where the finger has the panel's top-left during a drag, before clamping
+  /// to the screen. The overshoot beyond the clamp is the push into an edge.
+  Offset _dragPx = Offset.zero;
 
   /// What each tile actually is. The three-letter codes are kept as the stored
   /// identity (layouts and visibility are saved by code) but are not what the
@@ -667,6 +674,7 @@ class InstrumentListState extends State<InstrumentList> {
         }
         return _severityColor(switch (Storage().gpsState) {
           GpsState.externalFix ||
+          GpsState.sharedFix ||
           GpsState.internalFix => _Severity.ok,
           // The feed is a working source, but a delayed and synthetic one.
           GpsState.networkFix => _Severity.delayed,
@@ -758,17 +766,43 @@ class InstrumentListState extends State<InstrumentList> {
     }
   }
 
-  /// Snap to whichever edge the panel was released nearest, if any.
-  PanelDock _dockForPosition(Offset frac) {
-    final double x = frac.dx, y = frac.dy;
-    final double nearest = [y, 1 - y, x, 1 - x].reduce(min);
-    if (nearest > _snapFraction) {
-      return PanelDock.free;
+  /// Which dock, if any, a drag has now asked for. [wanted] is where the
+  /// finger has the panel, [clamped] where it can actually be.
+  PanelDock _dockForDrag(Offset wanted, Offset clamped, Size size,
+      double screenW, double screenH) {
+    // Pushed past an edge: dock to whichever edge is being pushed hardest.
+    final double pushL = clamped.dx - wanted.dx;
+    final double pushR = wanted.dx - clamped.dx;
+    final double pushT = clamped.dy - wanted.dy;
+    final double pushB = wanted.dy - clamped.dy;
+    final double push = [pushL, pushR, pushT, pushB].reduce(max);
+    if (push >= _dockPushPx) {
+      if (push == pushL) return PanelDock.left;
+      if (push == pushR) return PanelDock.right;
+      if (push == pushT) return PanelDock.top;
+      return PanelDock.bottom;
     }
-    if (nearest == y) return PanelDock.top;
-    if (nearest == 1 - y) return PanelDock.bottom;
-    if (nearest == x) return PanelDock.left;
-    return PanelDock.right;
+    // Not pushing: stay docked unless pulled clearly off the edge.
+    final double off = switch (_dock) {
+      PanelDock.left => clamped.dx,
+      PanelDock.right => screenW - (clamped.dx + size.width),
+      PanelDock.top => clamped.dy,
+      PanelDock.bottom => screenH - (clamped.dy + size.height),
+      PanelDock.free => double.infinity,
+    };
+    return off >= _dockPullPx ? PanelDock.free : _dock;
+  }
+
+  /// Where the panel currently is, in the overlay's coordinates. Read from the
+  /// render tree because a docked panel is pinned to its edge and its saved
+  /// position no longer says where it is drawn.
+  Rect? _panelRect() {
+    final RenderObject? box = _panelBoxKey.currentContext?.findRenderObject();
+    final RenderObject? stack = context.findRenderObject();
+    if (box is! RenderBox || stack is! RenderBox || !box.hasSize) {
+      return null;
+    }
+    return box.localToGlobal(Offset.zero, ancestor: stack) & box.size;
   }
 
   Widget _makePanel() {
@@ -804,6 +838,7 @@ class InstrumentListState extends State<InstrumentList> {
       return const SizedBox.shrink();
     }
     final Widget panel = DecoratedBox(
+      key: _panelBoxKey,
       decoration: BoxDecoration(
         color: surface.withValues(alpha: 0.86),
         borderRadius: const BorderRadius.all(Radius.circular(4)),
@@ -848,20 +883,29 @@ class InstrumentListState extends State<InstrumentList> {
       bottom: bottom == null ? null : bottom - pad,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onScaleStart: (_) => _scaleAtGestureStart = _fontScale,
+        onScaleStart: (_) {
+          _scaleAtGestureStart = _fontScale;
+          // Start from where the panel is drawn, not from the saved position:
+          // while docked the two differ, and starting from the stale one made
+          // the panel jump when pulled off an edge.
+          _dragPx = _panelRect()?.topLeft ??
+              Offset(_panelPos.dx * screenW, _panelPos.dy * screenH);
+        },
         onScaleUpdate: (details) {
           setState(() {
             if (details.pointerCount > 1) {
               _fontScale = (_scaleAtGestureStart * details.scale)
                   .clamp(_minScale, _maxScale);
             }
-            final double nx = (_panelPos.dx * screenW + details.focalPointDelta.dx)
-                .clamp(0.0, max(0.0, screenW - 40));
-            final double ny = (_panelPos.dy * screenH + details.focalPointDelta.dy)
-                .clamp(0.0, max(0.0, screenH - 40));
-            _panelPos = Offset(nx / screenW, ny / screenH);
+            final Size size = _panelRect()?.size ?? const Size(40, 40);
+            _dragPx += details.focalPointDelta;
+            final Offset clamped = Offset(
+              _dragPx.dx.clamp(0.0, max(0.0, screenW - size.width)),
+              _dragPx.dy.clamp(0.0, max(0.0, screenH - size.height)),
+            );
+            _panelPos = Offset(clamped.dx / screenW, clamped.dy / screenH);
             // Re-dock live so the layout previews where it will land.
-            _dock = _dockForPosition(_panelPos);
+            _dock = _dockForDrag(_dragPx, clamped, size, screenW, screenH);
           });
         },
         onScaleEnd: (_) => _savePositions(),

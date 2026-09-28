@@ -231,12 +231,18 @@ class Crc {
 
   static bool checkCrc(Uint8List bytes, int length, int msgCrc)
   {
+    return compute(bytes, length) == msgCrc;
+  }
+
+  /// CRC of the first [length] bytes (all of them when omitted), as a receiver
+  /// would append it; shared with the encoder so the two can never disagree.
+  static int compute(List<int> bytes, [int? length]) {
     int crc = 0;
-    for (int index = 0; index < length; index++) {
+    final int n = length ?? bytes.length;
+    for (int index = 0; index < n; index++) {
       crc = _crcTable[crc >> 8] ^ (crc << 8) ^ (bytes[index]);
       crc = crc & 0xFFFF;
     }
-
-    return crc == msgCrc;
+    return crc;
   }
 }

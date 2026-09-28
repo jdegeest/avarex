@@ -1258,8 +1258,7 @@ class _PlatePainter extends CustomPainter {
               ..isAntiAlias = true
               ..filterQuality = FilterQuality.high
               ..color = const Color(0x59FFFFFF)
-              ..colorFilter = const ui.ColorFilter.mode(
-                  Color(0xFF9E9E9E), BlendMode.saturation)));
+              ..colorFilter = Constants.staleSymbolFilter));
         // draw all based on screen width, height
         _paintLine.shader = ui.Gradient.linear(Offset(0, 2 * (size.height + size.width) / 64), Offset(0, -(size.height + size.width) / 2), [Colors.red, Colors.white]);
         canvas.drawLine(Offset(0, (size.height + size.width) / 64 - _imagePlane!.height), Offset(0, -(size.height + size.width) / 2), _paintLine);

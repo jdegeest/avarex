@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:avaremp/storage.dart';
+import 'package:avaremp/io/position_share.dart';
 import 'package:universal_io/io.dart';
 
 import 'package:avaremp/utils/app_log.dart';
@@ -16,6 +17,12 @@ class UdpReceiver {
   List<int> _ports = [];
   List<bool> _broadcast = [];
   Timer? _rebindTimer;
+  /// This host's own addresses, refreshed by the watchdog. A shared fix is
+  /// broadcast, and a broadcast comes back to its sender: without this the
+  /// phone sharing its GPS would hear itself as a receiver and, in Auto,
+  /// switch to it. Only applied while sharing, so a GDL90 simulator on the
+  /// same machine still works.
+  Set<String> _localAddresses = {};
 
   Future<void> initChannel(int port, bool broadcast) async {
     if (!_boundPorts.add(port)) {
@@ -32,6 +39,10 @@ class UdpReceiver {
           Datagram? dg = socket.receive();
           if (dg == null) {
             break;
+          }
+          if (PositionShare().running &&
+              _localAddresses.contains(dg.address.address)) {
+            continue; // our own shared fix, back off the wire
           }
           Storage().nmeaBuffer.put(dg.data);
           Storage().gdl90Buffer.put(dg.data);
@@ -66,11 +77,27 @@ class UdpReceiver {
     // Watchdog: rebind any port that failed at startup or dropped later. The
     // reception path is meant to stay up for the life of the app, so this keeps
     // running until finish(). Ports already bound short-circuit in initChannel.
+    _refreshLocalAddresses();
     _rebindTimer ??= Timer.periodic(const Duration(seconds: 5), (_) {
       for(int i = 0; i < _ports.length; i++) {
         initChannel(_ports[i], _broadcast[i]);
       }
+      _refreshLocalAddresses();
     });
+  }
+
+  Future<void> _refreshLocalAddresses() async {
+    try {
+      final List<NetworkInterface> ifs =
+          await NetworkInterface.list(type: InternetAddressType.IPv4);
+      _localAddresses = {
+        for (final NetworkInterface i in ifs)
+          for (final InternetAddress a in i.addresses) a.address
+      };
+    }
+    catch (e) {
+      // leave the last known set; the platform may not expose interfaces
+    }
   }
 
   void finish() {
