@@ -25,6 +25,7 @@ const String _kZipPath = 'zipPath';
 const String _kUrl = 'url';
 const String _kDataDir = 'dataDir';
 const String _kChartFilename = 'chartFilename';
+const String _kError = 'error';
 
 void _chartDownloadIsolateEntry(Map<String, Object?> start) {
   final SendPort mainSend = start[_kReply]! as SendPort;
@@ -41,25 +42,45 @@ void _chartDownloadIsolateEntry(Map<String, Object?> start) {
     });
     IOSink? out;
     try {
-      final http.Response r = await http.head(Uri.parse(url));
-      final int total = int.parse(r.headers["content-length"] ?? "0");
+      int total = 0;
+      try {
+        final http.Response r = await http.head(Uri.parse(url)).timeout(const Duration(seconds: 15));
+        total = int.tryParse(r.headers["content-length"] ?? "0") ?? 0;
+      } catch (_) {
+        // size unknown; fall back to the GET response length
+      }
       final request = http.Request('GET', Uri.parse(url));
-      final streamedResponse = await request.send();
+      final streamedResponse = await request.send().timeout(const Duration(seconds: 30));
+      if (streamedResponse.statusCode != 200) {
+        // release the connection before failing
+        await streamedResponse.stream.listen(null).cancel();
+        throw Exception("HTTP ${streamedResponse.statusCode}");
+      }
+      if (total <= 0) {
+        total = streamedResponse.contentLength ?? 0;
+      }
       out = File(zipPath).openWrite();
       int downloaded = 0;
       double lastProgress = 0;
-      await for (final chunk in streamedResponse.stream) {
+      int lastReported = 0;
+      // a stalled connection fails instead of hanging forever
+      await for (final chunk in streamedResponse.stream.timeout(const Duration(seconds: 60))) {
         if (cancelled) {
           throw Exception("Cancelled");
         }
         downloaded += chunk.length;
         out.add(chunk);
-        if (total != -1 && total != 0) {
+        if (total > 0) {
           final double progress = downloaded / total * 0.5;
-          if (progress - lastProgress >= 0.1) {
+          if (progress - lastProgress >= 0.01) {
             mainSend.send({_kDownloaded: downloaded, _kTotal: total});
             lastProgress = progress;
           }
+        }
+        else if (downloaded - lastReported >= 1 << 20) {
+          // size unknown: still report bytes every MB
+          mainSend.send({_kDownloaded: downloaded, _kTotal: 0});
+          lastReported = downloaded;
         }
       }
       await out.close();
@@ -74,7 +95,7 @@ void _chartDownloadIsolateEntry(Map<String, Object?> start) {
           await File(zipPath).delete();
         }
       } catch (_) {}
-      mainSend.send({_kOk: false});
+      mainSend.send({_kOk: false, _kError: _describeError(e)});
     } finally {
       cancelPort.close();
     }
@@ -124,14 +145,78 @@ void _chartUnzipIsolateEntry(Map<String, Object?> start) {
       try {
         inputStream?.close();
       } catch (_) {}
-      mainSend.send({_kOk: false});
+      mainSend.send({_kOk: false, _kError: "Install failed: ${_describeError(e)}"});
     } finally {
       cancelPort.close();
     }
   });
 }
 
+// Short, human readable reason for a failed download.
+String _describeError(Object e) {
+  if (e is TimeoutException) {
+    return "Server did not respond";
+  }
+  if (e is SocketException) {
+    return "No connection to server";
+  }
+  final String s = e.toString().replaceFirst("Exception: ", "");
+  if (s.startsWith("HTTP 404")) {
+    return "Not available on server for this cycle";
+  }
+  return s;
+}
+
 class Download {
+
+  // Why the last download() failed, or null.
+  String? lastError;
+  // Set when the failure was a user cancel rather than an error.
+  bool get wasCancelled => _cancelDownloadAndDelete;
+
+  static final Map<String, String> _cycleCache = {};
+
+  static String serverFor(bool backupServer) =>
+      backupServer ? "https://avare.bubble.org/" : "http://www.apps4av.org/regions/";
+
+  // The cycle the server is serving, cached per server for this session.
+  static Future<String> getServerCycle(bool backupServer) async {
+    final String server = serverFor(backupServer);
+    final String? cached = _cycleCache[server];
+    if (cached != null) {
+      return cached;
+    }
+    final String cycle = (await http.read(Uri.parse("$server/version.php"))
+        .timeout(const Duration(seconds: 30))).trim();
+    _cycleCache[server] = cycle;
+    return cycle;
+  }
+
+  static String _downloadUrl(Chart chart, String server, String cycle) {
+    return !chart.check
+        ? "$server/static/${chart.filename}.zip"
+        : "$server/$cycle/${chart.filename}.zip";
+  }
+
+  // Download size in bytes from the server, or null if unknown.
+  static Future<int?> getRemoteSize(Chart chart, bool nextCycle, bool backupServer) async {
+    try {
+      String cycle = await getServerCycle(backupServer);
+      if (nextCycle) {
+        cycle = FaaDates.getNextCycle(cycle);
+      }
+      final http.Response r = await http
+          .head(Uri.parse(_downloadUrl(chart, serverFor(backupServer), cycle)))
+          .timeout(const Duration(seconds: 15));
+      if (r.statusCode != 200) {
+        return null;
+      }
+      return int.tryParse(r.headers["content-length"] ?? "");
+    }
+    catch (e) {
+      return null;
+    }
+  }
 
   bool _cancelDownloadAndDelete = false;
   SendPort? _chartDownloadCancelSendPort;
@@ -253,9 +338,13 @@ class Download {
     }
   }
 
-  Future<void> download(Chart chart, bool nextCycle, bool backupServer, Function(Chart, int)? callback) async {
+  // onBytes reports raw transfer progress; beforeInstall runs after the zip is
+  // fully downloaded and before it is unzipped (e.g. to remove the old cycle).
+  Future<void> download(Chart chart, bool nextCycle, bool backupServer, Function(Chart, int)? callback,
+      {void Function(int downloaded, int total)? onBytes, Future<void> Function()? beforeInstall}) async {
 
-    String server = backupServer ? "https://avare.bubble.org/" : "http://www.apps4av.org/regions/";
+    String server = serverFor(backupServer);
+    lastError = null;
     _cancelDownloadAndDelete = false;
     _chartDownloadCancelSendPort = null;
     _chartUnzipCancelSendPort = null;
@@ -267,12 +356,13 @@ class Download {
 
     String currentCycle;
     try {
-      currentCycle = await http.read(Uri.parse("$server/version.php"));
+      currentCycle = await getServerCycle(backupServer);
       if(nextCycle) {
         currentCycle = FaaDates.getNextCycle(currentCycle);
       }
     }
     catch(e) {
+      lastError = "Could not reach server: ${_describeError(e)}";
       callback(chart, -1); // cycle not known
       return;
     }
@@ -285,9 +375,7 @@ class Download {
       return;
     }
 
-    final String downloadUrl = !chart.check
-        ? "$server/static/${chart.filename}.zip"
-        : "$server/$currentCycle/${chart.filename}.zip";
+    final String downloadUrl = _downloadUrl(chart, server, currentCycle);
 
     final receivePort = ReceivePort();
     final downloadCompleter = Completer<bool>();
@@ -303,10 +391,11 @@ class Download {
       }
       if (map.containsKey(_kDownloaded) && map.containsKey(_kTotal)) {
         final int total = map[_kTotal]! as int;
-        if (total != -1) {
+        onBytes?.call(map[_kDownloaded]! as int, total);
+        if (total > 0) {
           final int downloaded = map[_kDownloaded]! as int;
           final double progress = downloaded / total * 0.5;
-          if (progress - lastProgress >= 0.1) {
+          if (progress - lastProgress >= 0.01) {
             callback(chart, (progress * 100).toInt());
             lastProgress = progress;
           }
@@ -319,6 +408,7 @@ class Download {
           callback(chart, 50); // unzip start
           downloadCompleter.complete(true);
         } else {
+          lastError = map[_kError] as String?;
           downloadCompleter.complete(false);
         }
       }
@@ -348,10 +438,15 @@ class Download {
       return;
     }
 
+    if (beforeInstall != null) {
+      await beforeInstall();
+    }
+
     await _invalidateSqlite();
 
     if(_cancelDownloadAndDelete) {
       callback(chart, -1);
+      await _deleteZipFile(localFile);
       return;
     }
 
@@ -369,13 +464,14 @@ class Download {
       }
       if (map.containsKey(_kProgress)) {
         final double progress = map[_kProgress]! as double;
-        if (progress - lastProgress >= 0.1) {
+        if (progress - lastProgress >= 0.01) {
           callback(chart, (progress * 100).toInt());
           lastProgress = progress;
         }
         return;
       }
       if (map.containsKey(_kOk)) {
+        lastError = map[_kError] as String?;
         unzipCompleter.complete(map[_kOk]! as bool);
       }
     });
