@@ -798,11 +798,6 @@ class InstrumentListState extends State<InstrumentList> {
       ],
     );
 
-    if (shown.isEmpty) {
-      // Every readout hidden: show nothing at all rather than an empty frame.
-      // The corner menu stays, so the panel can be brought back.
-      return const SizedBox.shrink();
-    }
     final Widget panel = DecoratedBox(
       decoration: BoxDecoration(
         color: surface.withValues(alpha: 0.86),
@@ -811,7 +806,17 @@ class InstrumentListState extends State<InstrumentList> {
       ),
       child: ClipRRect(
         borderRadius: const BorderRadius.all(Radius.circular(4)),
-        child: IntrinsicWidth(child: table),
+        child: IntrinsicWidth(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _panelHeader(line),
+              if (shown.isNotEmpty) table,
+              if (_editing) _panelEditor(line),
+            ],
+          ),
+        ),
       ),
     );
 
@@ -873,124 +878,6 @@ class InstrumentListState extends State<InstrumentList> {
     );
   }
 
-  /// Corner button for the panel menu. Fixed top-left.
-  Widget _makeMenu() {
-    return Positioned(
-      left: 5,
-      top: 5,
-      child: GestureDetector(
-        onTap: _showPanelMenu,
-        child: CircleAvatar(
-          radius: 16,
-          backgroundColor:
-              Theme.of(context).scaffoldBackgroundColor.withValues(alpha: 0.7),
-          child: const Icon(Icons.tune, size: 18),
-        ),
-      ),
-    );
-  }
-
-  /// The panel menu.
-  ///
-  /// This was a dropdown of twenty-three stacked entries -- six actions and one
-  /// row per tile -- so it scrolled, and every tile you toggled closed it, which
-  /// meant reopening and re-scrolling for the next one. The actions are a single
-  /// row of icons and the tiles are a grid of chips, which fits without
-  /// scrolling, and toggling rebuilds in place instead of dismissing.
-  void _showPanelMenu() {
-    showDialog<void>(
-      context: context,
-      barrierColor: Colors.black26,
-      builder: (context) {
-        return Dialog(
-          alignment: Alignment.topLeft,
-          insetPadding: const EdgeInsets.fromLTRB(8, 44, 8, 8),
-          child: StatefulBuilder(
-            builder: (context, setMenuState) {
-              void act(VoidCallback f) {
-                f();
-                setMenuState(() {});
-              }
-
-              final bool locked = Storage().settings.isInstrumentsLocked();
-              return Padding(
-                padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(children: [
-                      IconButton(
-                        tooltip: "Bigger",
-                        icon: const Icon(Icons.zoom_in),
-                        onPressed: () => act(() => setState(() => _fontScale =
-                            (_fontScale * 1.1).clamp(_minScale, _maxScale))),
-                      ),
-                      IconButton(
-                        tooltip: "Smaller",
-                        icon: const Icon(Icons.zoom_out),
-                        onPressed: () => act(() => setState(() => _fontScale =
-                            (_fontScale / 1.1).clamp(_minScale, _maxScale))),
-                      ),
-                      IconButton(
-                        tooltip: "Dock: ${_dock.name}",
-                        icon: const Icon(Icons.dashboard_outlined),
-                        onPressed: () => act(() {
-                          setState(() {
-                            const List<PanelDock> order = [
-                              PanelDock.left, PanelDock.top, PanelDock.right,
-                              PanelDock.bottom, PanelDock.free];
-                            _dock = order[(order.indexOf(_dock) + 1) % order.length];
-                          });
-                          _savePositions();
-                        }),
-                      ),
-                      IconButton(
-                        tooltip: locked ? "Unlock panel" : "Lock panel",
-                        icon: Icon(locked ? Icons.lock_outline : Icons.lock_open),
-                        onPressed: () => act(() => setState(() =>
-                            Storage().settings.setInstrumentsLocked(!locked))),
-                      ),
-                      IconButton(
-                        tooltip: "Reset layout",
-                        icon: const Icon(Icons.restart_alt),
-                        onPressed: () => act(_resetLayout),
-                      ),
-                      const Spacer(),
-                      IconButton(
-                        tooltip: "Help",
-                        icon: const Icon(Icons.help_outline),
-                        onPressed: _showHelp,
-                      ),
-                    ]),
-                    const Divider(height: 8),
-                    // Chips rather than rows: seventeen tiles fit in five lines
-                    // instead of seventeen, and the state is readable at a glance.
-                    Wrap(
-                      spacing: 6,
-                      runSpacing: 2,
-                      children: [
-                        for (final String code in _items.where((c) => c.isNotEmpty))
-                          FilterChip(
-                            visualDensity: VisualDensity.compact,
-                            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                            labelStyle: const TextStyle(fontSize: 12),
-                            label: Text(_tileLabels[code] ?? code),
-                            selected: _visible.contains(code),
-                            onSelected: (_) => act(() => _toggleTile(code)),
-                          ),
-                      ],
-                    ),
-                  ],
-                ),
-              );
-            },
-          ),
-        );
-      },
-    );
-  }
-
   void _showHelp() {
     Toast.showToast(
         context,
@@ -1032,7 +919,6 @@ class InstrumentListState extends State<InstrumentList> {
     return Stack(
       children: <Widget>[
         _makePanel(),
-        _makeMenu(),
       ],
     );
   }
