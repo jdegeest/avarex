@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:avaremp/gdl90/message_factory.dart';
 import 'package:avaremp/gdl90/traffic_report_message.dart';
 import 'package:avaremp/storage.dart';
+import 'package:avaremp/utils/geo_calculations.dart';
 import 'package:avaremp/utils/app_log.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
@@ -24,7 +25,15 @@ class NetworkTraffic {
   /// opendata.adsb.fi: no key, no daily cap, asks only for reasonable use.
   static const String _base = "https://opendata.adsb.fi/api/v2";
   static const Duration _interval = Duration(seconds: 3);
-  static const int _radiusNm = 100;
+  /// Around ownship. Traffic near you is the set that matters, so this area is
+  /// always queried when there is a position at all.
+  static const int _ownshipRadiusNm = 100;
+
+  /// The feed rejects anything larger outright (300 returns HTTP 400).
+  static const int _maxRadiusNm = 250;
+
+  /// Below this a query is not worth a request of its own.
+  static const int _minRadiusNm = 10;
 
   /// Long enough to ride out a slow response, short enough that a hung request
   /// cannot hold the single-flight lock past the point where the data would be
@@ -80,44 +89,129 @@ class NetworkTraffic {
     AppLog.logMessage("Network traffic: stopped");
   }
 
-  /// Centre of the query: our own position when we have one, otherwise the last
-  /// map centre, so the very first poll has somewhere to look.
-  LatLng _queryCentre() {
-    final pos = Storage().position;
-    if (pos.latitude != 0 || pos.longitude != 0) {
-      return LatLng(pos.latitude, pos.longitude);
+  /// The areas to ask about this cycle.
+  ///
+  /// Two things matter and they are not the same place: the traffic around
+  /// *you*, and the traffic where you are *looking*. Following ownship alone
+  /// meant panning somewhere showed nothing; following the viewport alone would
+  /// drop the aircraft near you the moment you looked elsewhere. So both, minus
+  /// the redundant case where the viewport already sits inside the ownship
+  /// query -- a second request for the same aircraft is pure load on a feed
+  /// that is given to us for free.
+  List<(LatLng, int)> _queryAreas() {
+    final List<(LatLng, int)> areas = [];
+
+    final Position pos = Storage().position;
+    final bool haveOwnship = !(pos.latitude == 0 && pos.longitude == 0);
+    if (haveOwnship) {
+      areas.add((LatLng(pos.latitude, pos.longitude), _ownshipRadiusNm));
     }
-    return LatLng(Storage().settings.getCenterLatitude(),
-        Storage().settings.getCenterLongitude());
+
+    final LatLng? view = Storage().mapViewCentre;
+    final double viewRadius = Storage().mapViewRadiusNm;
+    if (view != null && viewRadius > 0) {
+      final int r = viewRadius.ceil().clamp(_minRadiusNm, _maxRadiusNm);
+      final bool alreadyCovered = haveOwnship &&
+          GeoCalculations().calculateDistance(areas.first.$1, view) + r <=
+              _ownshipRadiusNm;
+      if (!alreadyCovered) {
+        areas.add((view, r));
+      }
+    }
+
+    if (areas.isEmpty) {
+      // Nothing to go on yet: the last saved map centre at least puts the first
+      // poll somewhere plausible.
+      areas.add((LatLng(Storage().settings.getCenterLatitude(),
+          Storage().settings.getCenterLongitude()), _ownshipRadiusNm));
+    }
+    return areas;
+  }
+
+  /// Cycles to sit out after the feed asks us to slow down.
+  int _backoffCycles = 0;
+
+  /// One GET, decoded. Returns null and records why on any failure.
+  Future<List<dynamic>?> _fetch(String path) async {
+    final http.Response r = await http
+        .get(Uri.parse("$_base/$path"), headers: {"User-Agent": "AvareX"})
+        .timeout(_requestTimeout);
+    if (r.statusCode == 429) {
+      // A free community feed telling us we are asking too often. Sit out a few
+      // cycles rather than keep hammering it.
+      _backoffCycles = 10;
+      lastError = "rate limited";
+      return null;
+    }
+    if (r.statusCode != 200) {
+      lastError = "HTTP ${r.statusCode}";
+      return null;
+    }
+    final Map<String, dynamic> body = jsonDecode(r.body) as Map<String, dynamic>;
+    return (body["aircraft"] ?? body["ac"] ?? []) as List<dynamic>;
   }
 
   Future<void> _poll() async {
     if (_polling) {
       return; // never stack requests if one is slow
     }
+    if (_backoffCycles > 0) {
+      _backoffCycles--;
+      return;
+    }
     _polling = true;
     try {
-      final LatLng c = _queryCentre();
-      final Uri url = Uri.parse(
-          "$_base/lat/${c.latitude.toStringAsFixed(4)}"
-          "/lon/${c.longitude.toStringAsFixed(4)}/dist/$_radiusNm");
-      final http.Response r = await http
-          .get(url, headers: {"User-Agent": "AvareX"})
-          .timeout(_requestTimeout);
-      if (r.statusCode != 200) {
-        lastError = "HTTP ${r.statusCode}";
-        consecutiveFailures++;
-        return;
+      bool anySucceeded = false;
+      bool allAreasSucceeded = true;
+      int count = 0;
+      final Set<int> seen = <int>{};
+
+      // Ownship first, by registration. This used to be looked for among the
+      // area results, which only worked if the aircraft happened to be inside
+      // the queried circle -- and matched on callsign, which for an airliner is
+      // the flight number, not the tail. A registration lookup finds it
+      // wherever it is in the world.
+      final String tail =
+          Storage().settings.getNetworkOwnshipTail().trim().toUpperCase();
+      if (Storage().isNetworkSource && tail.isNotEmpty) {
+        final List<dynamic>? own = await _fetch("registration/$tail");
+        if (own != null) {
+          anySucceeded = true;
+          _adoptOwnship(own, tail);
+        }
       }
-      final Map<String, dynamic> body = jsonDecode(r.body) as Map<String, dynamic>;
-      final List<dynamic> list = (body["aircraft"] ?? body["ac"] ?? []) as List<dynamic>;
-      // The fetch succeeded, so the poll succeeded. Mark it before ingesting:
-      // one aircraft with an unexpected field used to throw out of here and
-      // leave the whole poll recorded as a failure.
-      lastError = null;
-      lastPoll = DateTime.now();
-      consecutiveFailures = 0;
-      _ingest(list);
+
+      for (final (LatLng c, int radius) in _queryAreas()) {
+        final List<dynamic>? list = await _fetch(
+            "lat/${c.latitude.toStringAsFixed(4)}"
+            "/lon/${c.longitude.toStringAsFixed(4)}/dist/$radius");
+        if (list == null) {
+          allAreasSucceeded = false;
+          continue;
+        }
+        anySucceeded = true;
+        count += _ingest(list, seen);
+      }
+
+      // Retire what the feed no longer reports -- but only when every area came
+      // back. On a partial failure the missing aircraft are missing because we
+      // did not ask, not because they are gone, and clearing them would blank
+      // the map on a single dropped request.
+      if (allAreasSucceeded) {
+        Storage().trafficCache.retainNetworkTraffic(seen);
+      }
+
+      if (anySucceeded) {
+        // Mark success before counting: one aircraft with an unexpected field
+        // used to throw out of here and record the whole poll as a failure.
+        lastError = null;
+        lastPoll = DateTime.now();
+        consecutiveFailures = 0;
+        lastAircraftCount = count;
+      }
+      else {
+        consecutiveFailures++;
+      }
     }
     catch (e) {
       lastError = e.toString();
@@ -136,13 +230,46 @@ class NetworkTraffic {
     return v is num ? v.toDouble() : null;
   }
 
-  void _ingest(List<dynamic> list) {
-    // A tail number only adopts an aircraft while the feed is the selected
-    // position source. With the feed supplying traffic alone, that aircraft is
-    // just another target and must stay on the map.
-    final String wantTail = Storage().isNetworkSource
-        ? Storage().settings.getNetworkOwnshipTail().trim().toUpperCase()
-        : "";
+  /// Take the aircraft returned by the registration lookup as ownship.
+  void _adoptOwnship(List<dynamic> list, String tail) {
+    for (final dynamic raw in list) {
+      if (raw is! Map<String, dynamic>) {
+        continue;
+      }
+      final Map<String, dynamic> a = raw;
+      final double? lat = _num(a, "lat");
+      final double? lon = _num(a, "lon");
+      if (lat == null || lon == null) {
+        continue; // on the ground with no position, or not currently tracked
+      }
+      final dynamic altRaw = a["alt_baro"];
+      final bool onGround = altRaw is String && altRaw == "ground";
+      final double altFt = altRaw is num ? altRaw.toDouble() : 0;
+      final double seen = _num(a, "seen_pos") ?? 0;
+      final String hex = (a["hex"] is String ? a["hex"] as String : "").trim();
+      final int icao = int.tryParse(hex.replaceAll("~", ""), radix: 16) ?? 0;
+      lastOwnshipAgeS = seen.round();
+      // We are this aircraft now, so clear whatever position it was last shown
+      // at as traffic -- otherwise a ghost of it stays where it was standing
+      // when the tail number was entered.
+      Storage().trafficCache.removeTraffic(icao);
+      Storage().setNetworkOwnship(
+          Position(
+            latitude: lat, longitude: lon,
+            altitude: altFt / Storage().units.mToF,
+            speed: (_num(a, "gs") ?? 0) / Storage().units.mpsTo,
+            heading: _num(a, "track") ?? 0,
+            timestamp: DateTime.now(),
+            accuracy: 0, altitudeAccuracy: 0, headingAccuracy: 0, speedAccuracy: 0),
+          _num(a, "baro_rate") ?? _num(a, "geom_rate") ?? 0,
+          !onGround, icao, tail);
+      return;
+    }
+  }
+
+  /// Places targets on the map and records which aircraft the feed reported, so
+  /// the ones it no longer reports can be retired rather than left as ghosts.
+  int _ingest(List<dynamic> list, Set<int> reported) {
     int count = 0;
     for (final dynamic raw in list) {
       if (raw is! Map<String, dynamic>) {
@@ -166,25 +293,6 @@ class NetworkTraffic {
           (a["flight"] is String ? a["flight"] as String : "").trim();
       final int icao = int.tryParse(hex.replaceAll("~", ""), radix: 16) ?? 0;
 
-      // Be that aircraft, if a tail number was given.
-      if (wantTail.isNotEmpty && flight.toUpperCase() == wantTail) {
-        lastOwnshipAgeS = seen.round();
-        // We are this aircraft now, so clear whatever position it was last
-        // shown at as traffic -- otherwise a ghost of it stays where it was
-        // standing when the tail number was entered.
-        Storage().trafficCache.removeTraffic(icao);
-        Storage().setNetworkOwnship(
-            Position(
-              latitude: lat, longitude: lon,
-              altitude: altFt / Storage().units.mToF,
-              speed: gs / Storage().units.mpsTo,
-              heading: track,
-              timestamp: DateTime.now(),
-              accuracy: 0, altitudeAccuracy: 0, headingAccuracy: 0, speedAccuracy: 0),
-            vs, !onGround, icao, flight);
-        continue; // never show ourselves as traffic
-      }
-
       final TrafficReportMessage m = TrafficReportMessage(MessageType.trafficReport);
       m.icao = icao;
       m.coordinates = LatLng(lat, lon);
@@ -199,8 +307,9 @@ class NetworkTraffic {
       // these out exactly as they would a weak receiver.
       m.time = DateTime.now().toUtc().subtract(Duration(milliseconds: (seen * 1000).round()));
       Storage().trafficCache.putTraffic(m, source: TrafficSource.network);
+      reported.add(icao);
       count++;
     }
-    lastAircraftCount = count;
+    return count;
   }
 }

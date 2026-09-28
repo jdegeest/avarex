@@ -135,11 +135,17 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
   /// replaced a tile that cycled through the modes and needed a paragraph to
   /// say what the next tap would do; showing the choices says it instead.
   Widget _modeSelector(List<String> modes, String selected, String Function(String) name,
-      void Function(String) onSelect) {
+      void Function(String) onSelect, {String label = ""}) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 2, 14, 4),
-      child: SizedBox(
-        width: double.infinity,
+      child: Row(children: [
+        if (label.isNotEmpty)
+          SizedBox(
+            width: 62,
+            child: Text(label,
+                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+          ),
+        Expanded(
         child: SegmentedButton<String>(
           showSelectedIcon: false,
           style: const ButtonStyle(
@@ -152,7 +158,8 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
           selected: {selected},
           onSelectionChanged: (s) => setState(() => onSelect(s.first)),
         ),
-      ),
+        ),
+      ]),
     );
   }
 
@@ -167,8 +174,9 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
           Text(title,
               style:
                   const TextStyle(fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 1.1)),
-          Text(subtitle,
-              style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.outline)),
+          if (subtitle.isNotEmpty)
+            Text(subtitle,
+                style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.outline)),
         ],
       ),
     );
@@ -491,44 +499,24 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
                         !s.connected ? Colors.grey : (!s.gpsValid ? Colors.amber : Colors.green);
                     return Column(
                       children: [
-                        _sectionHeader("POSITION", "driving the aircraft symbol"),
+                        // Two choices, stated once each at the top. Everything
+                        // below describes a piece of hardware, not a role, so
+                        // the receiver is not written up three times over.
+                        _sectionHeader("SOURCES", "what to use"),
                         _modeSelector(
                           Storage.gpsSourceModes,
                           Storage().gpsSourceMode,
                           Storage.gpsSourceModeName,
                           (m) => Storage().selectGpsSourceMode(m),
+                          label: "Position",
                         ),
-                        // Every candidate, each describing only itself, with the
-                        // selected one marked. The same hardware used to be
-                        // described from three different angles in three tiles
-                        // that were free to disagree with each other.
-                        _candidateTile(
-                            Icons.smartphone,
-                            "This device's GPS",
-                            Storage().deviceGpsHealth,
-                            eligible: Storage().acceptsPositionFrom(PositionOrigin.internal),
-                            inUse: Storage().positionInUse == PositionOrigin.internal),
-                        _candidateTile(
-                            Icons.settings_input_antenna,
-                            "ADS-B receiver",
-                            Storage().receiverPositionHealth,
-                            eligible: Storage().acceptsPositionFrom(PositionOrigin.external),
-                            inUse: Storage().positionInUse == PositionOrigin.external),
-                        _candidateTile(
-                            Icons.phone_android,
-                            "Shared from another device",
-                            Storage().sharedPositionHealth,
-                            eligible: Storage().acceptsPositionFrom(PositionOrigin.shared),
-                            inUse: Storage().positionInUse == PositionOrigin.shared),
-                        _candidateTile(
-                            Icons.cloud_outlined,
-                            "Internet feed",
-                            Storage().feedPositionHealth,
-                            eligible: Storage().acceptsPositionFrom(PositionOrigin.network),
-                            inUse: Storage().positionInUse == PositionOrigin.network),
-                        // The answer to "where is my position actually coming
-                        // from", in one sentence -- including when the honest
-                        // answer is that it is not coming from anywhere any more.
+                        _modeSelector(
+                          Storage.trafficSourceModes,
+                          Storage().trafficSourceMode,
+                          Storage.trafficSourceModeName,
+                          (m) => Storage().selectTrafficSourceMode(m),
+                          label: "Traffic",
+                        ),
                         _row(
                             Icons.place_outlined,
                             Gps.isPositionCloseToZero(Storage().position)
@@ -542,28 +530,71 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
                             value: Storage().positionProvenanceShort,
                             bold: true),
 
+                        _sectionHeader("THIS DEVICE", ""),
+                        _candidateTile(
+                            Icons.smartphone,
+                            "GPS",
+                            Storage().deviceGpsHealth,
+                            eligible: Storage().acceptsPositionFrom(PositionOrigin.internal),
+                            inUse: Storage().positionInUse == PositionOrigin.internal),
+
                         _sectionHeader("SHARE", "this device's GPS, to other copies of the app nearby"),
                         ..._shareRows(),
 
-                        _sectionHeader("TRAFFIC", "targets on the map"),
-                        _modeSelector(
-                          Storage.trafficSourceModes,
-                          Storage().trafficSourceMode,
-                          Storage.trafficSourceModeName,
-                          (m) => Storage().selectTrafficSourceMode(m),
+                        _sectionHeader("ANOTHER DEVICE", "sharing its GPS with this one"),
+                        _candidateTile(
+                            Icons.phone_android,
+                            "Shared GPS",
+                            Storage().sharedPositionHealth,
+                            eligible: Storage().acceptsPositionFrom(PositionOrigin.shared),
+                            inUse: Storage().positionInUse == PositionOrigin.shared),
+
+                        // Everything the receiver is doing, in one place: its
+                        // link, its own GPS, and the traffic it hears.
+                        _sectionHeader("ADS-B RECEIVER", ""),
+                        _statusTile(
+                          Icons.settings_input_antenna,
+                          "Link",
+                          s.connected
+                              ? (s.secondsSinceHeartbeat < 0
+                                  ? "connected" : "connected, ${s.secondsSinceHeartbeat} s")
+                              : "disconnected",
+                          connColor,
                         ),
-                        _candidateTile(Icons.settings_input_antenna, "ADS-B receiver",
+                        _candidateTile(
+                            Icons.gps_fixed,
+                            "Its own GPS",
+                            Storage().receiverPositionHealth,
+                            eligible: Storage().acceptsPositionFrom(PositionOrigin.external),
+                            inUse: Storage().positionInUse == PositionOrigin.external),
+                        _candidateTile(Icons.radar, "Traffic it hears",
                             Storage().receiverTrafficHealth,
                             eligible: Storage().usesReceiverTraffic,
                             inUse: Storage().usesReceiverTraffic &&
                                 Storage().adsbStatus.trafficFresh),
-                        _candidateTile(Icons.cloud_outlined, "Internet feed",
+                        _boolTile(Icons.access_time, "UTC timing", s.utcOk),
+                        _boolTile(Icons.power_settings_new, "UAT initialized", s.uatInitialized),
+                        _statusTile(
+                          Icons.cell_tower,
+                          "Ground stations",
+                          "${s.towerCount}",
+                          s.towerCount > 0 ? Colors.green : Colors.grey,
+                        ),
+                        _stationList(s),
+                        _diagnostics(s),
+
+                        _sectionHeader("INTERNET FEED", "test data"),
+                        _candidateTile(
+                            Icons.cloud_outlined,
+                            "Position",
+                            Storage().feedPositionHealth,
+                            eligible: Storage().acceptsPositionFrom(PositionOrigin.network),
+                            inUse: Storage().positionInUse == PositionOrigin.network),
+                        _candidateTile(Icons.cloud_queue, "Traffic",
                             Storage().feedTrafficHealth,
                             eligible: Storage().usesNetworkTraffic,
                             inUse: Storage().usesNetworkTraffic &&
                                 NetworkTraffic().healthy),
-                        // Fly-as belongs with the feed: it is the one setting that
-                        // turns feed traffic into a position.
                         if (Storage().needsNetworkFeed)
                           _row(Icons.badge_outlined, "Fly as", Colors.orange,
                               trailing: SizedBox(
@@ -579,8 +610,7 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
                                     contentPadding: EdgeInsets.symmetric(vertical: 6),
                                   ),
                                   onChanged: (v) {
-                                    Storage()
-                                        .settings
+                                    Storage().settings
                                         .setNetworkOwnshipTail(v.trim().toUpperCase());
                                     // Drop the old aircraft immediately rather
                                     // than letting its last position sit there
@@ -589,30 +619,6 @@ class _AdsbStatusScreenState extends State<AdsbStatusScreen> {
                                   },
                                 ),
                               )),
-
-                        _sectionHeader("RECEIVER", "link health"),
-                        _statusTile(
-                          Icons.settings_input_antenna,
-                          "Connection",
-                          s.connected ? "Connected" : "Disconnected",
-                          connColor,
-                        ),
-                        _statusTile(
-                          Icons.favorite,
-                          "Last heartbeat",
-                          s.secondsSinceHeartbeat < 0 ? "never" : "${s.secondsSinceHeartbeat}s ago",
-                          s.connected ? Colors.green : Colors.red,
-                        ),
-                        _boolTile(Icons.access_time, "UTC timing OK", s.utcOk),
-                        _boolTile(Icons.power_settings_new, "UAT initialized", s.uatInitialized),
-                        _statusTile(
-                          Icons.cell_tower,
-                          "Ground stations received",
-                          "${s.towerCount}",
-                          s.towerCount > 0 ? Colors.green : Colors.grey,
-                        ),
-                        _stationList(s),
-                        _diagnostics(s),
                       ],
                     );
                   },

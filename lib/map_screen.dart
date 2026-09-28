@@ -542,6 +542,12 @@ class MapScreenState extends State<MapScreen> {
         if (mapEvent is MapEventMoveEnd) {
           // save location for next start
           showOnMap(_controller.camera.center);
+          // Tell the traffic feed what we are looking at. Half the visible
+          // diagonal, plus a margin so targets are already there as they come
+          // over the edge.
+          final LatLngBounds vb = _controller.camera.visibleBounds;
+          Storage().setMapView(_controller.camera.center,
+              GeoCalculations().calculateDistance(vb.southWest, vb.northEast) / 2 * 1.15);
           Storage().settings.setZoom(_controller.camera.zoom);
           Storage().settings.setRotation(_controller.camera.rotation);
           _interacting = false;
@@ -848,7 +854,8 @@ class MapScreenState extends State<MapScreen> {
             valueListenable: Storage().trafficChange,
             builder: (context, value, _) {
               return PolylineLayer(
-                polylines: Storage().trafficCache.getTraffic()
+                polylines: Storage().trafficCache
+                    .getTrafficToDraw(_controller.camera.visibleBounds)
                   // A one-minute projection drawn from a position we have not
                   // confirmed in seconds is fiction, so stale targets get no line.
                   .where((t) => t.message.airborne && t.message.velocity > 0 && !t.isStale)
@@ -877,7 +884,8 @@ class MapScreenState extends State<MapScreen> {
             double angle = _northUp ? 0 : Storage().position.heading;
             return MarkerLayer(
               markers:
-              Storage().trafficCache.getTraffic().map((e) {
+              Storage().trafficCache
+                  .getTrafficToDraw(_controller.camera.visibleBounds).map((e) {
                 return Marker( // dot is centered at the traffic position; labels offset to the right
                   point: e.getCoordinates(),
                   width: Traffic.iconWidth,
