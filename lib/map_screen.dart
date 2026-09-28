@@ -66,6 +66,12 @@ class MapScreenState extends State<MapScreen> {
   String _type = Storage().settings.getChartType();
   int _maxZoom = ChartCategory.chartTypeToZoom(Storage().settings.getChartType());
   final MapController _controller = MapController();
+
+  /// Step the map zoom, clamped to the same limits as MapOptions.
+  void _zoomBy(double delta) {
+    final double target = (_controller.camera.zoom + delta).clamp(2, 20);
+    _controller.move(_controller.camera.center, target);
+  }
   // get layers and states from settings
   final List<String> _layers = Storage().settings.getLayers();
   final List<double> _layersOpacity = Storage().settings.getLayersOpacity();
@@ -508,9 +514,15 @@ class MapScreenState extends State<MapScreen> {
       // this is less crazy
       maxZoom: 20,
       // max for USGS
-      interactionOptions: InteractionOptions(flags: _northUp
+      interactionOptions: InteractionOptions(
+        flags: _northUp
           ? InteractiveFlag.all & (~InteractiveFlag.doubleTapDragZoom) & (~InteractiveFlag.rotate)
-          : InteractiveFlag.all & (~InteractiveFlag.doubleTapDragZoom)),
+          : InteractiveFlag.all & (~InteractiveFlag.doubleTapDragZoom),
+        // R/F zoom. A trackpad two-finger scroll arrives as a pan gesture, not
+        // a scroll wheel event, so laptops without a touchscreen or mouse wheel
+        // otherwise have no way to zoom. Arrow-key panning is on by default.
+        keyboardOptions: const KeyboardOptions(enableRFZooming: true),
+      ),
       // no rotation in track up
       initialRotation: Storage().settings.getRotation(),
       backgroundColor: Storage().settings.isLightMode() ? Constants.mapBackgroundColorLight: Constants.mapBackgroundColorDark,
@@ -1680,6 +1692,24 @@ class MapScreenState extends State<MapScreen> {
                                     icon: CircleAvatar(radius: iconRadius, backgroundColor: Theme.of(context).scaffoldBackgroundColor.withValues(alpha: 0.7),
                                         child: const Icon(Icons.layers)),
                                     onPressed: () => _showLayerSelector(context),
+                                  ),
+
+                                  // Zoom buttons. A trackpad two-finger scroll is
+                                  // delivered as a pan gesture rather than a scroll
+                                  // wheel event, so a laptop with no touchscreen and
+                                  // no mouse wheel has no other way to zoom.
+                                  IconButton(
+                                    tooltip: "Zoom in",
+                                    icon: CircleAvatar(radius: iconRadius, backgroundColor: Theme.of(context).scaffoldBackgroundColor.withValues(alpha: 0.7),
+                                        child: const Icon(Icons.add)),
+                                    onPressed: () => _zoomBy(1),
+                                  ),
+
+                                  IconButton(
+                                    tooltip: "Zoom out",
+                                    icon: CircleAvatar(radius: iconRadius, backgroundColor: Theme.of(context).scaffoldBackgroundColor.withValues(alpha: 0.7),
+                                        child: const Icon(Icons.remove)),
+                                    onPressed: () => _zoomBy(-1),
                                   ),
 
                                   if (FullScreen.supported)

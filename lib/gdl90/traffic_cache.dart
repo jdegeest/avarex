@@ -714,7 +714,11 @@ abstract class AbstractCachedCustomPainter extends CustomPainter {
     if (!_isRealtimeRasterizationRequired) {
       final ui.Image? cachedImage = _imageCache[_uiStateKey];  
       if (cachedImage != null) {
-        paintImage(canvas: canvas, rect: Rect.fromLTWH(0, 0, cachedImage.width*1.0, cachedImage.height*1.0), image: cachedImage);
+        // Draw into the LOGICAL rect. The cached bitmap is devicePixelRatio
+        // times larger, so it lands on screen at native resolution instead of
+        // being magnified (which is what made label text blurry).
+        paintImage(canvas: canvas, rect: Rect.fromLTWH(0, 0, _maxSize.width, _maxSize.height),
+          image: cachedImage, filterQuality: FilterQuality.high);
         return;
       }
     }
@@ -739,11 +743,32 @@ abstract class AbstractCachedCustomPainter extends CustomPainter {
     
     // Cache pixels of image to image cache, to save rasterization next time, if possible, and paint image
     if (!_isRealtimeRasterizationRequired) {
-      picture.toImage(_maxSize.width.ceil(), _maxSize.height.ceil()).then((newImage) {
-        _cacheImage(_uiStateKey, newImage);
-      });
+      // Re-record at device pixel scale so the cached raster is full
+      // resolution. The unscaled picture above is still used for drawPicture.
+      final double dpr = _devicePixelRatio;
+      final ui.PictureRecorder hiRecorder = ui.PictureRecorder();
+      final ui.Canvas hiCanvas = Canvas(hiRecorder);
+      hiCanvas.scale(dpr);
+      freshPaint(hiCanvas);
+      final ui.Picture hiPicture = hiRecorder.endRecording();
+      hiPicture
+        .toImage((_maxSize.width * dpr).ceil(), (_maxSize.height * dpr).ceil())
+        .then((newImage) {
+          hiPicture.dispose();
+          _cacheImage(_uiStateKey, newImage);
+        });
     }
     canvas.drawPicture(picture);
+  }
+
+  /// Display scale used when rasterizing the image cache.
+  static double get _devicePixelRatio {
+    final views = ui.PlatformDispatcher.instance.views;
+    if (views.isEmpty) {
+      return 1.0;
+    }
+    final double r = views.first.devicePixelRatio;
+    return r > 0 ? r : 1.0;
   }
 
   /// Abstract hook for implementing painter to paint the custom UI
